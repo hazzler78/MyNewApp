@@ -1,0 +1,123 @@
+body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    background: linear-gradient(135deg, #f6f8fd 0%, #f1f4f9 100%);
+    overflow: hidden;
+}
+
+.container {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 90%;
+    max-width: 500px;
+    padding: 40px;
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+    backdrop-filter: blur(10px);
+}
+
+.button-container {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    margin: 20px 0;
+}
+
+button {
+    flex: 1;
+    max-width: 200px;
+    padding: 15px 25px;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    color: white;
+    position: relative;
+    overflow: hidden;
+}
+
+#confettiButton {
+    background: linear-gradient(135deg, #6d0553 0%, #8f0a6d 100%);
+    box-shadow: 0 4px 15px rgba(109, 5, 83, 0.2);
+}
+
+#launchButton {
+    background: linear-gradient(135deg, #FF6B6B, #FF3366);
+    box-shadow: 0 4px 15px rgba(255, 51, 102, 0.2);
+}
+
+/* Shine effect on buttons */
+button::after {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: linear-gradient(
+        transparent,
+        rgba(255, 255, 255, 0.2),
+        transparent
+    );
+    transform: rotate(45deg);
+    transition: 0.5s;
+    opacity: 0;
+}
+
+button:hover::after {
+    opacity: 1;
+}
+
+/* Rocket styles */
+.rocket, .vertical-rocket {
+    position: fixed;
+    font-size: 24px;
+    z-index: 1000;
+    pointer-events: none;
+    transform-origin: center;
+    transition: transform 0.1s linear;
+}
+
+.confetti {
+    position: fixed;
+    pointer-events: none;
+    z-index: 1000;
+    border-radius: 50%;
+}
+
+/* Smooth rocket animations */
+@keyframes fly-around-container {
+    0% { transform: translate(-50%, -50%) rotate(-45deg); }
+    25% { transform: translate(50%, -50%) rotate(45deg); }
+    50% { transform: translate(50%, 50%) rotate(135deg); }
+    75% { transform: translate(-50%, 50%) rotate(225deg); }
+    100% { transform: translate(-50%, -50%) rotate(315deg); }
+}
+
+@keyframes launch-rocket {
+    0% { transform: translateY(0) scale(1); }
+    100% { transform: translateY(-300px) scale(0.8); }
+}
+
+.rainbow-text {
+    background: linear-gradient(45deg, 
+        #ff0000, #ff7300, #fffb00, #48ff00, 
+        #00ffd5, #002bff, #7a00ff, #ff00c8);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    background-size: 300% 300%;
+    animation: rainbow-bg 5s ease infinite;
+}
+
+@keyframes rainbow-bg {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}

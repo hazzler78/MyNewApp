@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fly Swatter Game</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="controls">
+        <button id="startBtn">Start Game</button>
+        <button id="stopBtn" disabled>Stop Game</button>
+    </div>
+    
+    <div class="stats-container">
+        Time: <span id="timer">60</span>s<br>
+        Score: <span id="score">0</span>
+    </div>
+
+    <div class="fly-counter">
+        Flies Remaining: <span id="flyCounter">10</span>
+    </div>
+
+    <div id="leaderboard">
+        <h3>Top Scores</h3>
+        <ol id="topScores"></ol>
+    </div>
+
+    <div id="game-container">
+        <img id="fly" alt="Fly">
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>

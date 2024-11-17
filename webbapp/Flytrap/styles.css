@@ -1,0 +1,157 @@
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    overflow: hidden;
+}
+
+#game-container {
+    width: 100vw;
+    height: 100vh;
+    position: relative;
+    background-color: #87CEEB;
+    z-index: 1;
+    cursor: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgdmlld0JveD0iMCAwIDMyIDMyIj48cGF0aCBmaWxsPSIjODg4IiBkPSJNMjggNEwxNiAxNnY4bDQgNGg4TDMyIDE2eiIvPjxwYXRoIGZpbGw9IiNmZmYiIGQ9Ik0yOCA2TDE4IDE2djZsMyAzaDZsMy0xMnoiLz48L3N2Zz4=') 16 16, auto;
+}
+
+#fly {
+    position: absolute;
+    width: 60px;
+    height: 60px;
+    cursor: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgdmlld0JveD0iMCAwIDMyIDMyIj48cGF0aCBmaWxsPSJyZWQiIGQ9Ik0yOCA0TDE2IDE2djhsNCA0aDhMMzIgMTZ6Ii8+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTI4IDZMMTggMTZ2NmwzIDNoNmwzLTEyeiIvPjwvc3ZnPg==') 16 16, pointer;
+    user-select: none;
+    filter: drop-shadow(2px 2px 2px rgba(0,0,0,0.3));
+    z-index: 2;
+    animation: wingBuzz 0.1s infinite;
+    transform-origin: center;
+}
+
+@keyframes wingBuzz {
+    0% { transform: scaleX(1) rotate(0deg); }
+    50% { transform: scaleX(1.1) rotate(2deg); }
+    100% { transform: scaleX(1) rotate(0deg); }
+}
+
+#controls {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    z-index: 100;
+}
+
+button {
+    padding: 10px 20px;
+    margin-right: 10px;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+.stats-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 15px;
+    border-radius: 8px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    z-index: 100;
+}
+
+.fly-counter {
+    position: fixed;
+    top: 100px;
+    right: 20px;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 15px;
+    border-radius: 8px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    z-index: 100;
+}
+
+#leaderboard {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 15px;
+    border-radius: 8px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    z-index: 100;
+    min-width: 300px;
+}
+
+#leaderboard h3 {
+    margin: 0 0 10px 0;
+    color: #333;
+    text-align: center;
+}
+
+#topScores {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+#topScores li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(0,0,0,0.1);
+    font-size: 14px;
+}
+
+#topScores li:last-child {
+    border-bottom: none;
+}
+
+#topScores .rank {
+    font-weight: bold;
+    color: #666;
+    width: 30px;
+}
+
+#topScores .score {
+    color: #2c3e50;
+    font-weight: bold;
+    width: 80px;
+}
+
+#topScores .flies {
+    color: #e74c3c;
+    width: 80px;
+}
+
+#topScores .time {
+    color: #27ae60;
+    width: 70px;
+}
+
+#topScores .date {
+    color: #7f8c8d;
+    font-size: 12px;
+}
+
+.splat {
+    position: absolute;
+    width: 30px;
+    height: 30px;
+    pointer-events: none;
+    z-index: 1;
+    animation: fadeIn 0.1s ease-in;
+}
+
+@keyframes fadeIn {
+    from { transform: scale(0.5); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}
+
+/* Add wing animation */
+.wing {
+    animation: wingFlap 0.1s infinite alternate;
+    transform-origin: center;
+}
+
+@keyframes wingFlap {
+    from { opacity: 0.3; }
+    to { opacity: 0.7; }
+}
