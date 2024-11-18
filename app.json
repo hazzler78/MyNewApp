@@ -13,9 +13,6 @@
     },
     "web": {
       "bundler": "metro"
-    },
-    "experiments": {
-      "newArchEnabled": true
     }
   }
 }

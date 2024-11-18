@@ -26,29 +26,54 @@ type HighScores = {
 const LEVELS: Level[] = [
   {
     name: "Beginner",
-    timeLimit: 15,
-    numberOfFlies: 4,
+    timeLimit: 30,
+    numberOfFlies: 8,
     pointsPerFly: 1,
     colors: ['#a8e6cf', '#dcedc1'] as const
   },
   {
     name: "Advanced",
-    timeLimit: 20,
-    numberOfFlies: 3,
+    timeLimit: 25,
+    numberOfFlies: 5,
     pointsPerFly: 1,
     colors: ['#ffd3b6', '#ffaaa5'] as const
   },
   {
     name: "Expert",
-    timeLimit: 25,
-    numberOfFlies: 2,
+    timeLimit: 20,
+    numberOfFlies: 3,
     pointsPerFly: 1,
     colors: ['#ff8b94', '#ff6b6b'] as const
   }
 ];
 
+const generateNewFlyPosition = () => {
+  const FLY_SIZE = 50;
+  const HEADER_HEIGHT = 100;
+  const BOTTOM_PADDING = 150;
+  const SIDE_PADDING = 20;
+  
+  const windowWidth = Dimensions.get('window').width;
+  const windowHeight = Dimensions.get('window').height;
+  
+  // Ensure flies stay fully within visible area
+  const maxLeft = windowWidth - FLY_SIZE - SIDE_PADDING;
+  const maxTop = windowHeight - FLY_SIZE - BOTTOM_PADDING;
+  const minLeft = SIDE_PADDING;
+  const minTop = HEADER_HEIGHT + SIDE_PADDING;
+  
+  // Round positions to prevent partial pixel placement
+  return {
+    left: Math.floor(Math.random() * (maxLeft - minLeft)) + minLeft,
+    top: Math.floor(Math.random() * (maxTop - minTop)) + minTop
+  };
+};
+
 // Add this component before the main Index component
 const Fly = ({ id, position, onCatch }: { id: string; position: { top: number; left: number }; onCatch: (id: string, position: { top: number; left: number }) => void }) => {
+  const windowHeight = Dimensions.get('window').height;
+  const isNearBottom = position.top > (windowHeight - 200);
+
   return (
     <TouchableOpacity
       onPress={() => onCatch(id, position)}
@@ -57,12 +82,19 @@ const Fly = ({ id, position, onCatch }: { id: string; position: { top: number; l
         {
           top: position.top,
           left: position.left,
+          padding: isNearBottom ? 15 : 5,
         },
       ]}
     >
-      <Text style={styles.flyEmoji}>
-        {Platform.OS === 'web' ? '🪰' : '🪰'}
-      </Text>
+      {Platform.OS === 'web' ? (
+        <Image 
+          source={require('../../assets/fly.png')} 
+          style={styles.flyImage}
+          resizeMode="contain"
+        />
+      ) : (
+        <Text style={styles.flyEmoji}>🪰</Text>
+      )}
     </TouchableOpacity>
   );
 };
@@ -79,16 +111,21 @@ const Splat = ({ position }: { position: { top: number; left: number } }) => {
         },
       ]}
     >
-      <Text style={styles.splatEmoji}>
-        {Platform.OS === 'web' ? '💥' : '💥'}
-      </Text>
+      {Platform.OS === 'web' ? (
+        <Image 
+          source={require('../../assets/splat.png')} 
+          style={styles.splatImage}
+        />
+      ) : (
+        <Text style={styles.splatEmoji}>💥</Text>
+      )}
     </View>
   );
 };
 
 export default function Index() {
   const [count, setCount] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(10);
+  const [timeLeft, setTimeLeft] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [highScores, setHighScores] = useState<{ [key: number]: number }>({
     0: 0, // Beginner
@@ -97,24 +134,27 @@ export default function Index() {
   });
   const [buttonPosition, setButtonPosition] = useState({ top: 0, left: 0 });
   const [splats, setSplats] = useState<Array<{top: number, left: number}>>([]);
-  const rotation = useRef(new Animated.Value(0)).current;
+  const rotation = useRef(new Animated.Value(0));
   const [gameStartTime, setGameStartTime] = useState<number>(0);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [gameStatus, setGameStatus] = useState<'idle' | 'countdown' | 'playing' | 'ended'>('idle');
   const [flies, setFlies] = useState<Fly[]>([]);
   const [currentLevel, setCurrentLevel] = useState<number>(0);
   const [score, setScore] = useState(0);
-  const [showScoreAnimation, setShowScoreAnimation] = useState(false);
-  const gameAreaRef = useRef<View>(null);
-  const shakeAnimation = useRef(new Animated.Value(0)).current;
 
+  const selectLevel = (index: number) => {
+    setCurrentLevel(index);
+  };
+
+  // Add some console logs to help us debug
   useEffect(() => {
-    console.log('Current level:', currentLevel);
-    console.log('Number of flies:', LEVELS[currentLevel].numberOfFlies);
-    console.log('Actual flies:', flies.length);
-  }, [currentLevel, flies]);
+    console.log('Game Status:', gameStatus);
+    console.log('Time Left:', timeLeft);
+    console.log('Is Playing:', isPlaying);
+  }, [gameStatus, timeLeft, isPlaying]);
 
   const startGame = () => {
+    // Reset everything
     setFlies([]);
     setSplats([]);
     setScore(0);
@@ -122,39 +162,46 @@ export default function Index() {
     setCountdown(3);
     setIsPlaying(false);
 
-    // Start countdown
-    let count = 3;
-    const countdownTimer = setInterval(() => {
-      count -= 1;
-      setCountdown(count);
-      
-      if (count <= 0) {
-        clearInterval(countdownTimer);
-        // Start game after countdown
-        setTimeout(() => {
-          setGameStatus('playing');
-          setTimeLeft(LEVELS[currentLevel].timeLimit);
-          setGameStartTime(Date.now());
-          setIsPlaying(true);
-          updateFliesPositions();
-        }, 1000);
-      }
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          clearInterval(timer);
+          
+          // Start the game with correct number of flies
+          setTimeout(() => {
+            setGameStatus('playing');
+            setTimeLeft(LEVELS[currentLevel].timeLimit);
+            setIsPlaying(true);
+            
+            // Create initial flies
+            const initialFlies = Array.from(
+              { length: LEVELS[currentLevel].numberOfFlies },
+              (_, index) => ({
+                id: `fly-${Date.now()}-${index}`,
+                position: generateNewFlyPosition()
+              })
+            );
+            setFlies(initialFlies);
+          }, 1000);
+          return null;
+        }
+        return prev - 1;
+      });
     }, 1000);
   };
 
-  // Separate useEffect for game timer
+  // Game timer
   useEffect(() => {
-    let gameTimer: NodeJS.Timeout;
+    let timer: NodeJS.Timeout;
 
     if (isPlaying && timeLeft > 0) {
-      gameTimer = setInterval(() => {
-        setTimeLeft(prev => {
-          const newTime = prev - 1;
+      timer = setInterval(() => {
+        setTimeLeft((current) => {
+          const newTime = current - 1;
           if (newTime <= 0) {
-            clearInterval(gameTimer);
+            clearInterval(timer);
             setIsPlaying(false);
             setGameStatus('ended');
-            updateHighScore(score);
             return 0;
           }
           return newTime;
@@ -163,30 +210,9 @@ export default function Index() {
     }
 
     return () => {
-      if (gameTimer) {
-        clearInterval(gameTimer);
-      }
+      if (timer) clearInterval(timer);
     };
   }, [isPlaying]);
-
-  // Separate useEffect for fly updates
-  useEffect(() => {
-    if (isPlaying) {
-      updateFliesPositions();
-    }
-  }, [isPlaying]);
-
-  const updateFliesPositions = () => {
-    console.log('Updating flies positions for level:', currentLevel);
-    const levelFlies = LEVELS[currentLevel].numberOfFlies;
-    
-    const newFlies = Array.from({ length: levelFlies }, (_, i) => ({
-      id: `fly-${Date.now()}-${i}`,
-      position: generateNewFlyPosition()
-    }));
-    
-    setFlies(newFlies);
-  };
 
   const catchFly = (flyId: string, position: { top: number; left: number }) => {
     if (!isPlaying || timeLeft <= 0) return;
@@ -194,177 +220,89 @@ export default function Index() {
     // Add splat effect
     setSplats(prev => [...prev, position]);
 
-    // Update score with animation
+    // Update score
     setScore(prev => prev + 1);
 
-    // Remove caught fly and add new one
+    // Remove caught fly and add new one immediately
     setFlies(prev => {
       const remaining = prev.filter(f => f.id !== flyId);
-      return [
-        ...remaining,
-        {
-          id: `fly-${Date.now()}`,
-          position: generateNewFlyPosition()
-        }
-      ];
+      const newFly = {
+        id: `fly-${Date.now()}-${Math.random()}`,
+        position: generateNewFlyPosition()
+      };
+      return [...remaining, newFly];
     });
 
-    // Optional: Add shake effect to game area
-    if (gameAreaRef.current) {
-      Animated.sequence([
-        Animated.timing(shakeAnimation, {
-          toValue: 5,
-          duration: 50,
-          useNativeDriver: true
-        }),
-        Animated.timing(shakeAnimation, {
-          toValue: -5,
-          duration: 50,
-          useNativeDriver: true
-        }),
-        Animated.timing(shakeAnimation, {
-          toValue: 0,
-          duration: 50,
-          useNativeDriver: true
-        })
-      ]).start();
-    }
+    // Clean up splat
+    setTimeout(() => {
+      setSplats(prev => prev.filter(p => p !== position));
+    }, 1000);
   };
-
-  const getCurrentLevelHighScore = () => {
-    return highScores[currentLevel] || 0;
-  };
-
-  const updateHighScore = async (newScore: number) => {
-    if (newScore > (highScores[currentLevel] || 0)) {
-      const newHighScores = {
-        ...highScores,
-        [currentLevel]: newScore
-      };
-      setHighScores(newHighScores);
-      try {
-        await AsyncStorage.setItem('highScores', JSON.stringify(newHighScores));
-      } catch (error) {
-        console.log('Error saving high score:', error);
-      }
-    }
-  };
-
-  useEffect(() => {
-    if (isPlaying) {
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(rotation, {
-            toValue: 1,
-            duration: 100,
-            useNativeDriver: true
-          }),
-          Animated.timing(rotation, {
-            toValue: -1,
-            duration: 100,
-            useNativeDriver: true
-          })
-        ])
-      ).start();
-    } else {
-      rotation.setValue(0);
-    }
-  }, [isPlaying]);
 
   const generateNewFlyPosition = () => {
-    const screenHeight = Dimensions.get('window').height;
-    const screenWidth = Dimensions.get('window').width;
-    const buttonSize = 80;
-    const headerSpace = 200;
-    const safeMargin = 20;
+    const FLY_SIZE = 50;
+    const HEADER_HEIGHT = 100;
+    const BOTTOM_PADDING = 150;
+    const SIDE_PADDING = 20;
     
+    const windowWidth = Dimensions.get('window').width;
+    const windowHeight = Dimensions.get('window').height;
+    
+    // Ensure flies stay fully within visible area
+    const maxLeft = windowWidth - FLY_SIZE - SIDE_PADDING;
+    const maxTop = windowHeight - FLY_SIZE - BOTTOM_PADDING;
+    const minLeft = SIDE_PADDING;
+    const minTop = HEADER_HEIGHT + SIDE_PADDING;
+    
+    // Round positions to prevent partial pixel placement
     return {
-      top: headerSpace + (Math.random() * (screenHeight - buttonSize - headerSpace - safeMargin)),
-      left: safeMargin + (Math.random() * (screenWidth - buttonSize - (safeMargin * 2))),
+      left: Math.floor(Math.random() * (maxLeft - minLeft)) + minLeft,
+      top: Math.floor(Math.random() * (maxTop - minTop)) + minTop
     };
   };
 
-  const returnToLevelSelect = () => {
-    setGameStatus('idle');
-    setCount(0);
-    setScore(0);
-    setSplats([]);
-    setFlies([]);
-    setIsPlaying(false);
-  };
-
-  const spin = rotation.interpolate({
-    inputRange: [-1, 1],
-    outputRange: ['-30deg', '30deg']
-  });
-
-  const selectLevel = (level: number) => {
-    console.log('Selecting level:', level);
-    setCurrentLevel(level);
-    startGame();
-  };
-
-  // Load high scores when app starts
+  // Add this useEffect to maintain correct number of flies
   useEffect(() => {
-    loadHighScores();
-  }, []);
-
-  const loadHighScores = async () => {
-    try {
-      const savedScores = await AsyncStorage.getItem('highScores');
-      if (savedScores) {
-        setHighScores(JSON.parse(savedScores));
+    if (isPlaying && gameStatus === 'playing') {
+      const targetFlies = LEVELS[currentLevel].numberOfFlies;
+      
+      if (flies.length !== targetFlies) {
+        console.log('Adjusting fly count:', {
+          current: flies.length,
+          target: targetFlies
+        });
+        
+        if (flies.length < targetFlies) {
+          // Add missing flies
+          const newFlies = Array.from(
+            { length: targetFlies - flies.length },
+            () => ({
+              id: `fly-${Date.now()}-${Math.random()}`,
+              position: generateNewFlyPosition()
+            })
+          );
+          setFlies(prev => [...prev, ...newFlies]);
+        } else {
+          // Remove extra flies if somehow we have too many
+          setFlies(prev => prev.slice(0, targetFlies));
+        }
       }
-    } catch (error) {
-      console.log('Error loading high scores:', error);
     }
-  };
+  }, [flies.length, isPlaying, gameStatus, currentLevel]);
 
   return (
     <View style={styles.container}>
-      {/* Header */}
+      {/* Game header */}
       <View style={styles.header}>
         <Text style={styles.title}>Fly Swatter!</Text>
-        <Text style={styles.subtitle}>
-          Level: {LEVELS[currentLevel].name}
-        </Text>
         <Text style={styles.timer}>Time: {timeLeft}s</Text>
         <Text style={styles.score}>Score: {score}</Text>
       </View>
 
-      {/* Level Selection Screen */}
-      {gameStatus === 'idle' && (
-        <View style={styles.buttonContainer}>
-          <Text style={styles.instructions}>Select Difficulty:</Text>
-          {LEVELS.map((level, index) => (
-            <TouchableOpacity 
-              key={level.name}
-              style={[
-                styles.levelButton,
-                currentLevel === index ? styles.selectedLevel : null
-              ]}
-              onPress={() => selectLevel(index)}
-            >
-              <Text style={styles.buttonText}>{level.name}</Text>
-              <Text style={styles.levelDetails}>
-                {level.numberOfFlies} flies • {level.timeLimit}s
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
-
-      {/* Countdown Screen */}
-      {gameStatus === 'countdown' && (
-        <View style={styles.overlay}>
-          <Text style={styles.countdown}>{countdown}</Text>
-        </View>
-      )}
-
-      {/* Game Area */}
-      {(gameStatus === 'playing' || gameStatus === 'countdown') && (
-        <View style={styles.gameArea} ref={gameAreaRef}>
-          {flies.map(fly => (
+      {/* Game area */}
+      {gameStatus === 'playing' && (
+        <View style={styles.gameArea}>
+          {flies.map((fly) => (
             <Fly
               key={fly.id}
               id={fly.id}
@@ -378,7 +316,14 @@ export default function Index() {
         </View>
       )}
 
-      {/* Game Over Screen */}
+      {/* Countdown overlay */}
+      {gameStatus === 'countdown' && countdown !== null && (
+        <View style={styles.countdownOverlay}>
+          <Text style={styles.countdownText}>{countdown}</Text>
+        </View>
+      )}
+
+      {/* Game over screen */}
       {gameStatus === 'ended' && (
         <View style={styles.overlay}>
           <Text style={styles.gameOver}>Game Over!</Text>
@@ -389,6 +334,27 @@ export default function Index() {
           >
             <Text style={styles.buttonText}>Play Again</Text>
           </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Level selection */}
+      {gameStatus === 'idle' && (
+        <View style={styles.buttonContainer}>
+          {LEVELS.map((level, index) => (
+            <TouchableOpacity
+              key={level.name}
+              style={[
+                styles.levelButton,
+                currentLevel === index ? styles.selectedLevel : null
+              ]}
+              onPress={() => {
+                selectLevel(index);
+                startGame();
+              }}
+            >
+              <Text style={styles.buttonText}>{level.name}</Text>
+            </TouchableOpacity>
+          ))}
         </View>
       )}
     </View>
@@ -461,7 +427,11 @@ const styles = StyleSheet.create({
   gameArea: {
     flex: 1,
     backgroundColor: '#f0f0f0',
+    position: 'relative',
     overflow: 'hidden',
+    marginTop: 0,
+    marginBottom: 0,
+    paddingHorizontal: 40,
   },
   overlay: {
     position: 'absolute',
@@ -473,8 +443,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  countdown: {
-    fontSize: 72,
+  countdownOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  countdownText: {
+    fontSize: 100,
     fontWeight: 'bold',
     color: 'white',
   },
@@ -498,13 +479,20 @@ const styles = StyleSheet.create({
   },
   fly: {
     position: 'absolute',
-    width: 40,
-    height: 40,
+    width: 50,
+    height: 50,
     justifyContent: 'center',
     alignItems: 'center',
   },
+  flyImage: {
+    width: '100%',
+    height: '100%',
+  },
   flyEmoji: {
-    fontSize: 30,
+    fontSize: 35,
+    lineHeight: 40,
+    textAlign: 'center',
+    includeFontPadding: false,
   },
   splat: {
     position: 'absolute',
@@ -512,6 +500,11 @@ const styles = StyleSheet.create({
     height: 40,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  splatImage: {
+    width: 40,
+    height: 40,
+    resizeMode: 'contain',
   },
   splatEmoji: {
     fontSize: 30,
