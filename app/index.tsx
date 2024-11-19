@@ -1,7 +1,6 @@
-import { Text, View, StyleSheet, TouchableOpacity, Dimensions, Animated, Platform, Image } from "react-native";
+import { Text, View, StyleSheet, TouchableOpacity, Dimensions, Animated, Platform, Image, TextInput } from "react-native";
 import { useState, useEffect, useRef } from "react";
-import { LinearGradient } from 'expo-linear-gradient';
-import { MotiView } from 'moti';
+import { LinearGradient } from "expo-linear-gradient";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 type Fly = {
@@ -17,11 +16,13 @@ type Level = {
   colors: string[];
 };
 
-type HighScores = {
-  beginner: number;
-  advanced: number;
-  expert: number;
+type HighScore = {
+  score: number;
+  date: string;
+  playerName: string;
 };
+
+type HighScores = Record<number, HighScore[]>;
 
 const LEVELS: Level[] = [
   {
@@ -124,24 +125,35 @@ const Splat = ({ position }: { position: { top: number; left: number } }) => {
   );
 };
 
+const HIGHSCORES_STORAGE_KEY = '@fly_swatter_highscores';
+
 export default function Index() {
   const [count, setCount] = useState(0);
   const [timeLeft, setTimeLeft] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [highScores, setHighScores] = useState<{ [key: number]: number }>({
-    0: 0, // Beginner
-    1: 0, // Advanced
-    2: 0  // Expert
+  const [highScores, setHighScores] = useState<HighScores>({
+    0: [],
+    1: [],
+    2: []
   });
-  const [buttonPosition, setButtonPosition] = useState({ top: 0, left: 0 });
   const [splats, setSplats] = useState<Array<{top: number, left: number}>>([]);
-  const rotation = useRef(new Animated.Value(0));
-  const [gameStartTime, setGameStartTime] = useState<number>(0);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [gameStatus, setGameStatus] = useState<'idle' | 'countdown' | 'playing' | 'ended'>('idle');
   const [flies, setFlies] = useState<Fly[]>([]);
   const [currentLevel, setCurrentLevel] = useState<number>(0);
   const [score, setScore] = useState(0);
+  const [isNewHighScore, setIsNewHighScore] = useState(false);
+  const [playerName, setPlayerName] = useState<string>('');
+  const [showNameInput, setShowNameInput] = useState(false);
+
+  // Move debug function here, after all state declarations
+  const debugHighScores = (message: string) => {
+    console.log(`[DEBUG] ${message}`, {
+      currentLevel,
+      score,
+      highScores,
+    });
+  };
 
   const selectLevel = (index: number) => {
     setCurrentLevel(index);
@@ -154,6 +166,49 @@ export default function Index() {
     console.log('Is Playing:', isPlaying);
   }, [gameStatus, timeLeft, isPlaying]);
 
+  // Load high scores when component mounts
+  useEffect(() => {
+    const loadHighScores = async () => {
+      try {
+        const savedScores = await AsyncStorage.getItem(HIGHSCORES_STORAGE_KEY);
+        console.log('Loading saved scores:', savedScores);
+        
+        if (savedScores) {
+          const parsedScores = JSON.parse(savedScores);
+          console.log('Parsed saved scores:', parsedScores);
+          setHighScores(parsedScores);
+        } else {
+          console.log('No saved scores found, initializing with defaults');
+          const initialScores = {
+            0: [],
+            1: [],
+            2: []
+          };
+          await AsyncStorage.setItem(HIGHSCORES_STORAGE_KEY, JSON.stringify(initialScores));
+          setHighScores(initialScores);
+        }
+      } catch (error) {
+        console.error('Error loading high scores:', error);
+      }
+    };
+
+    loadHighScores();
+  }, []); // Only run once on mount
+
+  // Save high scores whenever they change
+  useEffect(() => {
+    const saveHighScores = async () => {
+      try {
+        await AsyncStorage.setItem(HIGHSCORES_STORAGE_KEY, JSON.stringify(highScores));
+        console.log('Saved high scores:', highScores); // Debug log
+      } catch (error) {
+        console.error('Error saving high scores:', error);
+      }
+    };
+
+    saveHighScores();
+  }, [highScores]);
+
   const startGame = () => {
     // Reset everything
     setFlies([]);
@@ -162,9 +217,8 @@ export default function Index() {
     setGameStatus('countdown');
     setCountdown(3);
     setIsPlaying(false);
-
     const timer = setInterval(() => {
-      setCountdown((prev) => {
+      setCountdown((prev: number | null) => {
         if (prev === null || prev <= 1) {
           clearInterval(timer);
           
@@ -193,16 +247,26 @@ export default function Index() {
 
   // Game timer
   useEffect(() => {
-    let timer: NodeJS.Timeout;
-
+    let timer: number | undefined;
     if (isPlaying && timeLeft > 0) {
-      timer = setInterval(() => {
-        setTimeLeft((current) => {
+      timer = window.setInterval(() => {
+        setTimeLeft((current: number) => {
           const newTime = current - 1;
           if (newTime <= 0) {
-            clearInterval(timer);
+            window.clearInterval(timer);
             setIsPlaying(false);
-            setGameStatus('ended');
+            
+            // Check if score qualifies for leaderboard
+            const currentScores = highScores[currentLevel] || [];
+            const lowestScore = currentScores.length > 0 
+              ? Math.min(...currentScores.map(s => s.score))
+              : 0;
+            
+            if (currentScores.length < 10 || score > lowestScore) {
+              setShowNameInput(true);
+            } else {
+              setGameStatus('ended');
+            }
             return 0;
           }
           return newTime;
@@ -213,17 +277,14 @@ export default function Index() {
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [isPlaying]);
+  }, [isPlaying, timeLeft, currentLevel, score, highScores]);
 
   const catchFly = (flyId: string, position: { top: number; left: number }) => {
     if (!isPlaying || timeLeft <= 0) return;
-
-    // Add splat effect
+    
     setSplats(prev => [...prev, position]);
-
-    // Update score
     setScore(prev => prev + 1);
-
+    
     // Remove caught fly and add new one immediately
     setFlies(prev => {
       const remaining = prev.filter(f => f.id !== flyId);
@@ -234,32 +295,10 @@ export default function Index() {
       return [...remaining, newFly];
     });
 
-    // Clean up splat
+    // Clean up splat after 1 second
     setTimeout(() => {
-      setSplats(prev => prev.filter(p => p !== position));
+      setSplats(prev => prev.filter(p => p.top !== position.top || p.left !== position.left));
     }, 1000);
-  };
-
-  const generateNewFlyPosition = () => {
-    const FLY_SIZE = 50;
-    const HEADER_HEIGHT = 100;
-    const BOTTOM_PADDING = 150;
-    const SIDE_PADDING = 20;
-    
-    const windowWidth = Dimensions.get('window').width;
-    const windowHeight = Dimensions.get('window').height;
-    
-    // Ensure flies stay fully within visible area
-    const maxLeft = windowWidth - FLY_SIZE - SIDE_PADDING;
-    const maxTop = windowHeight - FLY_SIZE - BOTTOM_PADDING;
-    const minLeft = SIDE_PADDING;
-    const minTop = HEADER_HEIGHT + SIDE_PADDING;
-    
-    // Round positions to prevent partial pixel placement
-    return {
-      left: Math.floor(Math.random() * (maxLeft - minLeft)) + minLeft,
-      top: Math.floor(Math.random() * (maxTop - minTop)) + minTop
-    };
   };
 
   // Add this useEffect to maintain correct number of flies
@@ -282,14 +321,163 @@ export default function Index() {
               position: generateNewFlyPosition()
             })
           );
-          setFlies(prev => [...prev, ...newFlies]);
+          setFlies((prev: Fly[]) => [...prev, ...newFlies]);
         } else {
           // Remove extra flies if somehow we have too many
-          setFlies(prev => prev.slice(0, targetFlies));
+          setFlies((prev: Fly[]) => prev.slice(0, targetFlies));
         }
       }
     }
   }, [flies.length, isPlaying, gameStatus, currentLevel]);
+
+  // Add reset function near other game functions
+  const handleResetPress = () => {
+
+    try {
+      const initialScores = {
+        0: [],
+        1: [],
+        2: []
+      };
+      const saveScores = async () => {
+        await AsyncStorage.setItem(HIGHSCORES_STORAGE_KEY, JSON.stringify(initialScores));
+      };
+      saveScores();
+      setHighScores(initialScores);
+    } catch (error) {
+      console.error('Error resetting high scores:', error);
+    }
+  };
+
+  // Add this near the top of the Index component
+  useEffect(() => {
+    const checkHighScores = async () => {
+      try {
+        const savedScores = await AsyncStorage.getItem(HIGHSCORES_STORAGE_KEY);
+        console.log('Current stored high scores:', savedScores);
+      } catch (error) {
+        console.error('Error checking high scores:', error);
+      }
+    };
+
+    checkHighScores();
+  }, [highScores]); // This will log whenever highScores changes
+
+  // Add console log to debug high scores
+  useEffect(() => {
+    console.log('Current high scores:', highScores);
+  }, [highScores]);
+
+  // Add this effect to monitor high scores changes
+  useEffect(() => {
+    console.log('High scores updated:', highScores);
+  }, [highScores]);
+
+  // Add the NameInputOverlay component
+  const NameInputOverlay = () => (
+    <View style={styles.nameInputOverlay}>
+      <View style={styles.nameInputDialog}>
+        <Text style={styles.nameInputTitle}>New High Score! 🎉</Text>
+        <Text style={styles.nameInputSubtitle}>Enter your initials:</Text>
+        <TextInput
+          style={styles.nameInput}
+          value={playerName}
+          onChangeText={setPlayerName}
+          maxLength={3}
+          autoCapitalize="characters"
+          autoFocus
+        />
+        <TouchableOpacity 
+          style={[styles.button, !playerName && styles.buttonDisabled]}
+          disabled={!playerName}
+          onPress={submitScore}
+        >
+          <Text style={styles.buttonText}>Submit</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  // Update the submitScore function
+  const submitScore = async () => {
+    if (!playerName) return;
+    
+    console.log('Submitting score:', {
+      level: currentLevel,
+      score,
+      playerName,
+      currentHighScores: highScores[currentLevel]
+    });
+    
+    const newScore = {
+      score,
+      date: new Date().toLocaleDateString(),
+      playerName: playerName.toUpperCase()
+    };
+
+    // Make sure we're working with an array
+    let currentLevelScores = Array.isArray(highScores[currentLevel]) 
+      ? highScores[currentLevel] 
+      : [];
+
+    // Create new array with the new score
+    currentLevelScores = [...currentLevelScores, newScore];
+    
+    // Sort scores in descending order
+    currentLevelScores.sort((a, b) => b.score - a.score);
+    
+    // Keep only top 10 scores
+    currentLevelScores = currentLevelScores.slice(0, 10);
+
+    // Create updated high scores object
+    const updatedScores = {
+      ...highScores,
+      [currentLevel]: currentLevelScores
+    };
+
+    try {
+      console.log('Saving updated scores:', updatedScores);
+      await AsyncStorage.setItem(HIGHSCORES_STORAGE_KEY, JSON.stringify(updatedScores));
+      setHighScores(updatedScores);
+      
+      // Reset states in the correct order
+      setShowNameInput(false);
+      setPlayerName('');
+      setGameStatus('ended');
+    } catch (error) {
+      console.error('Error saving score:', error);
+    }
+  };
+
+  // Add this useEffect to monitor state changes
+  useEffect(() => {
+    console.log('Game Status:', gameStatus);
+    console.log('Show Name Input:', showNameInput);
+    console.log('Player Name:', playerName);
+  }, [gameStatus, showNameInput, playerName]);
+
+  // Add Leaderboard component
+  const Leaderboard = ({ level }: { level: number }) => {
+    const scores = highScores[level] || [];
+    
+    return (
+      <View style={styles.leaderboard}>
+        <Text style={styles.leaderboardTitle}>{LEVELS[level].name} Leaderboard</Text>
+        {scores.length === 0 ? (
+          <Text style={styles.noScores}>No scores yet!</Text>
+        ) : (
+          scores.map((score, index) => (
+            <View key={index} style={styles.scoreRow}>
+              <Text style={styles.rank}>#{index + 1}</Text>
+              <Text style={styles.playerName}>{score.playerName}</Text>
+              <Text style={styles.scoreValue}>{score.score}</Text>
+              <Text style={styles.scoreDate}>{score.date}</Text>
+            </View>
+          ))
+        )}
+      </View>
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -303,7 +491,7 @@ export default function Index() {
       {/* Game area */}
       {gameStatus === 'playing' && (
         <View style={styles.gameArea}>
-          {flies.map((fly) => (
+          {flies.map((fly: {id: string; position: {top: number; left: number}}) => (
             <Fly
               key={fly.id}
               id={fly.id}
@@ -311,9 +499,14 @@ export default function Index() {
               onCatch={catchFly}
             />
           ))}
-          {splats.map((position, index) => (
+          {splats.map((position: {top: number; left: number}, index: number) => (
             <Splat key={index} position={position} />
           ))}
+          {isNewHighScore && (
+            <Animated.View style={styles.newHighScoreAlert}>
+              <Text style={styles.newHighScoreText}>New High Score! 🎉</Text>
+            </Animated.View>
+          )}
         </View>
       )}
 
@@ -329,6 +522,7 @@ export default function Index() {
         <View style={styles.overlay}>
           <Text style={styles.gameOver}>Game Over!</Text>
           <Text style={styles.finalScore}>Score: {score}</Text>
+          <Leaderboard level={currentLevel} />
           <TouchableOpacity 
             style={styles.button}
             onPress={() => setGameStatus('idle')}
@@ -354,10 +548,16 @@ export default function Index() {
               }}
             >
               <Text style={styles.buttonText}>{level.name}</Text>
+              <Text style={styles.levelDetails}>
+                High Score: {highScores[index]?.[0]?.score ?? 0}
+              </Text>
             </TouchableOpacity>
           ))}
         </View>
       )}
+
+      {/* Add name input overlay */}
+      {showNameInput && <NameInputOverlay />}
     </View>
   );
 }
@@ -424,6 +624,8 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 14,
     marginTop: 5,
+    textAlign: 'center',
+    opacity: 0.9,
   },
   gameArea: {
     flex: 1,
@@ -475,8 +677,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#4CAF50',
     padding: 15,
     borderRadius: 8,
-    minWidth: 200,
-    alignItems: 'center',
+    marginTop: 20,
   },
   fly: {
     position: 'absolute',
@@ -509,5 +710,107 @@ const styles = StyleSheet.create({
   },
   splatEmoji: {
     fontSize: 30,
+  },
+  newHighScoreAlert: {
+    position: 'absolute',
+    top: 120,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(255, 215, 0, 0.9)',
+    padding: 10,
+    borderRadius: 8,
+    zIndex: 1000,
+  },
+  newHighScoreText: {
+    color: '#000',
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  nameInputOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 2000,
+  },
+  nameInputDialog: {
+    backgroundColor: 'white',
+    padding: 20,
+    borderRadius: 8,
+    width: '80%',
+    maxWidth: 300,
+    alignItems: 'center',
+  },
+  nameInputTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+  nameInputSubtitle: {
+    fontSize: 16,
+    marginBottom: 20,
+  },
+  nameInput: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 4,
+    padding: 10,
+    width: '100%',
+    fontSize: 24,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  buttonDisabled: {
+    opacity: 0.5,
+  },
+  leaderboard: {
+    width: '100%',
+    maxWidth: 400,
+    padding: 20,
+    marginVertical: 20,
+  },
+  leaderboardTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: 'white',
+    textAlign: 'center',
+    marginBottom: 15,
+  },
+  scoreRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    padding: 10,
+    marginVertical: 2,
+    borderRadius: 4,
+  },
+  rank: {
+    color: 'white',
+    width: 40,
+  },
+  playerName: {
+    color: 'white',
+    width: 80,
+    textAlign: 'center',
+  },
+  scoreValue: {
+    color: 'white',
+    width: 60,
+    textAlign: 'right',
+  },
+  scoreDate: {
+    color: 'white',
+    width: 100,
+    textAlign: 'right',
+    fontSize: 12,
+  },
+  noScores: {
+    color: 'white',
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
 });
