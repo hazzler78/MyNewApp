@@ -88,7 +88,7 @@ const Fly = ({ id, position, onCatch }: { id: string; position: { top: number; l
     >
       {Platform.OS === 'web' ? (
         <Image 
-          source={require('../../assets/fly.png')} 
+          source={require('../assets/fly.png')} 
           style={styles.flyImage}
           resizeMode="contain"
         />
@@ -113,8 +113,9 @@ const Splat = ({ position }: { position: { top: number; left: number } }) => {
     >
       {Platform.OS === 'web' ? (
         <Image 
-          source={require('../../assets/splat.png')} 
+          source={require('../assets/splat.png')} 
           style={styles.splatImage}
+          resizeMode="contain"
         />
       ) : (
         <Text style={styles.splatEmoji}>💥</Text>
