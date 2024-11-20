@@ -90,7 +90,7 @@ const generateNewFlyPosition = () => {
   };
 };
 
-// Update the image imports at the top of your file
+// Add these imports at the top of your file
 const FLY_IMAGES = {
   normal: require('../assets/fly.png'),
   bonus: require('../assets/bonus-fly.png'),
@@ -110,82 +110,6 @@ const Fly = ({ id, position, variant, onCatch }: {
   variant: FlyVariant;
   onCatch: (id: string, position: { top: number; left: number }, variant: FlyVariant) => void 
 }) => {
-  // Create two animated values for x and y movement
-  const wiggleX = useRef(new Animated.Value(0)).current;
-  const wiggleY = useRef(new Animated.Value(0)).current;
-  const rotation = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    // Create random wiggle animations
-    const createWiggleAnimation = () => {
-      const randomX = (Math.random() - 0.5) * 20; // Increase/decrease 20 for more/less movement
-      const randomY = (Math.random() - 0.5) * 20;
-      const randomRotation = (Math.random() - 0.5) * 0.2; // Subtle rotation
-
-      return Animated.parallel([
-        Animated.sequence([
-          Animated.timing(wiggleX, {
-            toValue: randomX,
-            duration: 1000 + Math.random() * 1000, // Random duration
-            useNativeDriver: true,
-          }),
-          Animated.timing(wiggleX, {
-            toValue: -randomX,
-            duration: 1000 + Math.random() * 1000,
-            useNativeDriver: true,
-          }),
-        ]),
-        Animated.sequence([
-          Animated.timing(wiggleY, {
-            toValue: randomY,
-            duration: 800 + Math.random() * 500,
-            useNativeDriver: true,
-          }),
-          Animated.timing(wiggleY, {
-            toValue: -randomY,
-            duration: 800 + Math.random() * 500,
-            useNativeDriver: true,
-          }),
-        ]),
-        Animated.sequence([
-          Animated.timing(rotation, {
-            toValue: randomRotation,
-            duration: 1200 + Math.random() * 500,
-            useNativeDriver: true,
-          }),
-          Animated.timing(rotation, {
-            toValue: -randomRotation,
-            duration: 1200 + Math.random() * 500,
-            useNativeDriver: true,
-          }),
-        ]),
-      ]);
-    };
-
-    // Create infinite animation loop
-    const startAnimation = () => {
-      const wiggleAnimation = createWiggleAnimation();
-      wiggleAnimation.start(() => {
-        startAnimation(); // Restart animation when complete
-      });
-    };
-
-    startAnimation();
-
-    // Cleanup animation when fly is removed
-    return () => {
-      wiggleX.stopAnimation();
-      wiggleY.stopAnimation();
-      rotation.stopAnimation();
-    };
-  }, []);
-
-  // Convert rotation to interpolated string
-  const spin = rotation.interpolate({
-    inputRange: [-1, 1],
-    outputRange: ['-30deg', '30deg'],
-  });
-
   return (
     <TouchableOpacity
       onPress={() => onCatch(id, position, variant)}
@@ -197,21 +121,11 @@ const Fly = ({ id, position, variant, onCatch }: {
         },
       ]}
     >
-      <Animated.View
-        style={{
-          transform: [
-            { translateX: wiggleX },
-            { translateY: wiggleY },
-            { rotate: spin },
-          ],
-        }}
-      >
-        <Image 
-          source={FLY_IMAGES[variant]}
-          style={styles.flyImage}
-          resizeMode="contain"
-        />
-      </Animated.View>
+      <Image 
+        source={FLY_IMAGES[variant]}
+        style={styles.flyImage}
+        resizeMode="contain"
+      />
     </TouchableOpacity>
   );
 };
@@ -1230,12 +1144,10 @@ const styles = StyleSheet.create({
     height: 50,
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 1000,
   },
   flyImage: {
-    width: 50,
-    height: 50,
-    resizeMode: 'contain',
+    width: '100%',
+    height: '100%',
   },
   splat: {
     position: 'absolute',
