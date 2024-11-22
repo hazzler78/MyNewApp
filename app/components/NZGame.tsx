@@ -714,7 +714,7 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 28, // Increased from 24
     fontWeight: 'bold',
-    textShadowColor: 'rgba(0, 0, 0, 0.3)', // Added text shadow for better readability
+    textShadow: '2px 2px 4px rgba(0, 0, 0, 0.3)', // Added text shadow for better readability
     textShadowOffset: { width: 1, height: 1 },
     textShadowRadius: 3,
   },

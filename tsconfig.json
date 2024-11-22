@@ -13,5 +13,8 @@
     "**/*.ts",
     "**/*.tsx",
     "app/index.jsx"
+  ],
+  "exclude": [
+    "node_modules/react-native/Libraries/Image/AssetSourceResolver.js"
   ]
 }

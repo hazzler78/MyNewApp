@@ -1,1 +1,1 @@
-export type FlyVariant = 'normal' | 'special';
+export type FlyVariant = 'normal' | 'bonus' | 'negative';

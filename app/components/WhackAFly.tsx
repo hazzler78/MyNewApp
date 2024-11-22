@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { CrossPlatformImage } from './CrossPlatformImage';
 import { Splat, SplatVariant } from './Splat';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 type FlyVariant = 'normal' | 'splat' | 'bonus';
 
@@ -30,6 +31,8 @@ interface FlyPosition {
   patternOffset: number;
   currentSize: number;
   sizeDirection: 'growing' | 'shrinking';
+  variant: FlyVariant;
+  points: number;
 }
 
 interface WhackAFlyProps {
@@ -39,17 +42,27 @@ interface WhackAFlyProps {
 
 const MIN_SPEED = 0.2;
 const MAX_SPEED = 0.3;
-const MIN_SIZE = 30;
+const MIN_SIZE = 40;
 const MAX_SIZE = 60;
 const SIZE_CHANGE_SPEED = 0.005;
-const PATTERN_INTENSITY = 5;
-const CENTER_BIAS = 0.7;
+const PATTERN_INTENSITY = 3;
+const CENTER_BIAS = 0.8;
 const SPAWN_INTERVAL = 2000;
-const SCREEN_PADDING = 20;  // Keep flies away from edges
+const SCREEN_PADDING = 40;  // More padding from edges
 const INITIAL_FLIES = 3;   // Start with 3 flies
 const MIN_FLIES = 2;       // Minimum flies on screen
 const MAX_FLIES = 6;       // Maximum flies on screen
 const SPAWN_ACCELERATION = 0.9; // Spawn gets faster over time
+const COMBO_TIMEOUT = 1000; // Time window for combo (1 second)
+const MAX_COMBO_MULTIPLIER = 4; // Maximum combo multiplier
+const COMBO_THRESHOLDS = {
+  NORMAL: 0,
+  GOOD: 3,
+  GREAT: 5,
+  AMAZING: 8
+};
+const ROTATION_SPEED = 0.5;   // Slower rotation
+const BOUNCE_DAMPENING = 0.8; // Softer bounces
 
 interface SplatPosition {
   id: string;
@@ -57,9 +70,20 @@ interface SplatPosition {
   variant: SplatVariant;
 }
 
+interface HighScore {
+  score: number;
+  playerName: string;
+  date: string;
+  gameMode: string;
+  survivalTime?: number;
+}
+
+// Update the game status type
+type GameStatus = 'idle' | 'playing' | 'ended' | 'menu';
+
 export function WhackAFly({ onGameEnd, onSubmitScore }: WhackAFlyProps) {
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
-  const [gameStatus, setGameStatus] = useState<'idle' | 'playing' | 'ended'>('idle');
+  const [gameStatus, setGameStatus] = useState<GameStatus>('idle');
   const [flies, setFlies] = useState<FlyPosition[]>([]);
   const [highScore, setHighScore] = useState(0);
   const [score, setScore] = useState(0);
@@ -67,95 +91,228 @@ export function WhackAFly({ onGameEnd, onSubmitScore }: WhackAFlyProps) {
   const [isNewHighScore, setIsNewHighScore] = useState(false);
   const [showNameInput, setShowNameInput] = useState(false);
   const [playerName, setPlayerName] = useState('');
+  const [comboCount, setComboCount] = useState(0);
+  const [lastCatchTime, setLastCatchTime] = useState(0);
+  const [comboMultiplier, setComboMultiplier] = useState(1);
+  const [showComboText, setShowComboText] = useState(false);
+  const [comboText, setComboText] = useState('');
+  const [highScores, setHighScores] = useState<HighScore[]>([]);
+  const [showHighScores, setShowHighScores] = useState(false);
+  const [flyScale] = useState(new Animated.Value(1));
+  const [debugInfo, setDebugInfo] = useState({
+    gameStatus: 'idle',
+    fliesCount: 0,
+    renderCycle: 0
+  });
 
-  const spawnFly = useCallback((): FlyPosition => {
+  // Declare updateFlyPosition first
+  const updateFlyPosition = useCallback((fly: FlyPosition): FlyPosition => {
     const padding = SCREEN_PADDING;
-    const edge = Math.floor(Math.random() * 4);
-    let x, y;
-    
-    switch(edge) {
-      case 0: // top
-        x = padding + Math.random() * (SCREEN_WIDTH - 2 * padding);
-        y = padding;
-        break;
-      case 1: // right
-        x = SCREEN_WIDTH - padding;
-        y = padding + Math.random() * (SCREEN_HEIGHT - 2 * padding);
-        break;
-      case 2: // bottom
-        x = padding + Math.random() * (SCREEN_WIDTH - 2 * padding);
-        y = SCREEN_HEIGHT - padding;
-        break;
-      default: // left
-        x = padding;
-        y = padding + Math.random() * (SCREEN_HEIGHT - 2 * padding);
-        break;
+    let newX = fly.x + (fly.direction.x * fly.speed);
+    let newY = fly.y + (fly.direction.y * fly.speed);
+    let newDirectionX = fly.direction.x;
+    let newDirectionY = fly.direction.y;
+
+    // Bounce off screen edges
+    if (newX <= padding || newX >= SCREEN_WIDTH - padding - fly.currentSize) {
+      newDirectionX *= -1;
+      newX = newX <= padding ? padding : SCREEN_WIDTH - padding - fly.currentSize;
     }
 
-    const targetX = (Math.random() * SCREEN_WIDTH * (1 - CENTER_BIAS)) + 
-                   (SCREEN_WIDTH * 0.5 * CENTER_BIAS);
-    const targetY = (Math.random() * SCREEN_HEIGHT * (1 - CENTER_BIAS)) + 
-                   (SCREEN_HEIGHT * 0.5 * CENTER_BIAS);
+    if (newY <= padding || newY >= SCREEN_HEIGHT - padding - fly.currentSize) {
+      newDirectionY *= -1;
+      newY = newY <= padding ? padding : SCREEN_HEIGHT - padding - fly.currentSize;
+    }
 
-    const patterns: Array<'straight' | 'zigzag' | 'circular' | 'hover'> = 
-      ['straight', 'zigzag', 'circular', 'hover'];
-    const pattern = patterns[Math.floor(Math.random() * patterns.length)];
+    return {
+      ...fly,
+      x: newX,
+      y: newY,
+      direction: {
+        x: newDirectionX,
+        y: newDirectionY
+      }
+    };
+  }, []);
 
-    const sizeDirection = Math.random() > 0.5 ? 'growing' : 'shrinking';
-    const initialSize = sizeDirection === 'growing' ? MIN_SIZE : MAX_SIZE;
-
-    const speed = MIN_SPEED + (Math.random() * (MAX_SPEED - MIN_SPEED) * 0.8);
-
+  // Then declare spawnFly which can use updateFlyPosition
+  const spawnFly = useCallback((): FlyPosition => {
+    const size = MIN_SIZE;
+    const padding = SCREEN_PADDING;
+    
+    const x = Math.random() * (SCREEN_WIDTH - size - padding * 2) + padding;
+    const y = Math.random() * (SCREEN_HEIGHT - size - padding * 2) + padding;
+    
     const newFly: FlyPosition = {
       key: Date.now(),
       x,
       y,
       direction: {
-        x: (targetX - x) / Math.sqrt((targetX - x) ** 2 + (targetY - y) ** 2),
-        y: (targetY - y) / Math.sqrt((targetX - x) ** 2 + (targetY - y) ** 2)
+        x: Math.random() * 2 - 1,
+        y: Math.random() * 2 - 1,
       },
-      speed,
-      pattern,
-      patternOffset: Math.random() * Math.PI * 2,
-      currentSize: initialSize,
-      sizeDirection,
+      speed: MIN_SPEED + Math.random() * (MAX_SPEED - MIN_SPEED),
+      pattern: 'straight',
+      patternOffset: 0,
+      currentSize: size,
+      sizeDirection: 'growing',
+      variant: 'normal',
+      points: 1
     };
 
+    console.log('Spawned new fly:', newFly);
     return newFly;
   }, []);
 
-  const startGame = () => {
-    setScore(0);
-    setTimeLeft(GAME_DURATION);
-    setFlies([]);
+  // Then startGame which uses both functions
+  const startGame = useCallback(() => {
+    console.log('Starting game with full initialization...');
+    
+    // Reset game state
     setGameStatus('playing');
-  };
+    setTimeLeft(GAME_DURATION);
+    setScore(0);
+    setComboCount(0);
+    setComboMultiplier(1);
+    setSplats([]);
+    
+    // Create initial flies with explicit typing
+    const initialFlies: FlyPosition[] = Array.from({ length: INITIAL_FLIES }, () => {
+      const size = MIN_SIZE;
+      const padding = SCREEN_PADDING;
+      
+      // Calculate safe spawn area
+      const safeX = Math.random() * (SCREEN_WIDTH - size - padding * 2) + padding;
+      const safeY = Math.random() * (SCREEN_HEIGHT - size - padding * 2) + padding;
+      
+      const fly: FlyPosition = {
+        key: Date.now() + Math.random(),
+        x: safeX,
+        y: safeY,
+        direction: {
+          x: (Math.random() * 2 - 1) * MAX_SPEED,
+          y: (Math.random() * 2 - 1) * MAX_SPEED,
+        },
+        speed: MIN_SPEED + Math.random() * (MAX_SPEED - MIN_SPEED),
+        pattern: 'straight',
+        patternOffset: 0,
+        currentSize: size,
+        sizeDirection: 'growing',
+        variant: 'normal',
+        points: 1
+      };
 
-  const handleFlyPress = (key: number, position: { top: number; left: number }) => {
+      console.log('Created fly:', fly);
+      return fly;
+    });
+
+    console.log('Setting initial flies:', initialFlies);
+    setFlies(initialFlies);
+
+    // Debug info
+    setDebugInfo({
+      gameStatus: 'playing',
+      fliesCount: INITIAL_FLIES,
+      renderCycle: 0
+    });
+
+    console.log('Game started with:', {
+      status: 'playing',
+      initialFlies: initialFlies.length,
+      timeLeft: GAME_DURATION
+    });
+  }, []);
+
+  // Add game loop effect
+  useEffect(() => {
+    if (gameStatus !== 'playing') return;
+
+    console.log('Game loop started');
+    const gameLoop = setInterval(() => {
+      setFlies(prevFlies => {
+        // Update positions
+        const updatedFlies = prevFlies.map(updateFlyPosition);
+        console.log('Updated flies positions:', updatedFlies);
+        return updatedFlies;
+      });
+    }, 16); // ~60fps
+
+    // Spawn new flies
+    const spawnLoop = setInterval(() => {
+      setFlies(prevFlies => {
+        if (prevFlies.length < MAX_FLIES) {
+          console.log('Spawning new fly');
+          return [...prevFlies, spawnFly()];
+        }
+        return prevFlies;
+      });
+    }, SPAWN_INTERVAL);
+
+    return () => {
+      clearInterval(gameLoop);
+      clearInterval(spawnLoop);
+    };
+  }, [gameStatus, updateFlyPosition, spawnFly]);
+
+  const handleFlyPress = useCallback((fly: FlyPosition) => {
     if (gameStatus !== 'playing') return;
     
-    const flyPosition = flies.find(f => f.key === key);
+    // Calculate position for splat effect
+    const position = {
+      top: fly.y,
+      left: fly.x
+    };
     
-    if (flyPosition) {
-      const timeBonus = Math.floor(timeLeft / 10);
-      const speedBonus = Math.floor(flyPosition.speed * 10);
-      const totalScore = 1 + timeBonus + speedBonus;
+    const currentTime = Date.now();
+    const timeSinceLastCatch = currentTime - lastCatchTime;
+    
+    // Update combo
+    if (timeSinceLastCatch <= COMBO_TIMEOUT) {
+      setComboCount(prev => prev + 1);
+      setComboMultiplier(prev => Math.min(prev + 0.5, MAX_COMBO_MULTIPLIER));
       
-      setScore(prev => prev + totalScore);
-      setFlies(current => current.filter(fly => fly.key !== key));
+      // Set combo feedback text
+      let newComboText = '';
+      if (comboCount >= COMBO_THRESHOLDS.AMAZING) {
+        newComboText = 'AMAZING!';
+      } else if (comboCount >= COMBO_THRESHOLDS.GREAT) {
+        newComboText = 'GREAT!';
+      } else if (comboCount >= COMBO_THRESHOLDS.GOOD) {
+        newComboText = 'GOOD!';
+      }
       
-      const splatId = `splat-${Date.now()}`;
-      setSplats(prev => [...prev, { 
-        id: splatId, 
-        position,
-        variant: 'normal'
-      }]);
-      
-      setTimeout(() => {
-        setSplats(prev => prev.filter(splat => splat.id !== splatId));
-      }, 1000);
+      if (newComboText) {
+        setComboText(newComboText);
+        setShowComboText(true);
+        setTimeout(() => setShowComboText(false), 1000);
+      }
+    } else {
+      // Reset combo if too much time has passed
+      setComboCount(0);
+      setComboMultiplier(1);
     }
-  };
+    
+    setLastCatchTime(currentTime);
+
+    // Calculate score with combo multiplier
+    const points = Math.round(fly.points * comboMultiplier);
+    setScore(prev => prev + points);
+
+    // Add splat effect
+    const newSplat: SplatPosition = {
+      id: `splat-${Date.now()}`,
+      position,
+      variant: fly.variant === 'bonus' ? 'bonus' : 'normal'
+    };
+    
+    setSplats(prev => [...prev, newSplat]);
+    setTimeout(() => {
+      setSplats(prev => prev.filter(s => s.id !== newSplat.id));
+    }, 1000);
+
+    // Remove the hit fly
+    setFlies(prev => prev.filter(f => f.key !== fly.key));
+  }, [gameStatus, comboCount, comboMultiplier, lastCatchTime]);
 
   const handleGameEnd = useCallback(() => {
     setGameStatus('ended');
@@ -185,48 +342,17 @@ export function WhackAFly({ onGameEnd, onSubmitScore }: WhackAFlyProps) {
   }, [gameStatus, handleGameEnd]);
 
   useEffect(() => {
-    if (gameStatus === 'playing') {
-      setTimeLeft(GAME_DURATION);
-      
-      // Spawn initial flies
-      for (let i = 0; i < INITIAL_FLIES; i++) {
-        spawnFly();
-      }
-    }
-  }, [gameStatus]);
-
-  useEffect(() => {
     if (gameStatus !== 'playing') return;
 
-    // Calculate spawn interval based on time remaining
-    const timeProgress = timeLeft / GAME_DURATION;
-    const currentSpawnInterval = SPAWN_INTERVAL * 
-      Math.pow(SPAWN_ACCELERATION, GAME_DURATION - timeLeft);
-
-    const spawnTimer = setInterval(() => {
-      setFlies(current => {
-        if (current.length < MAX_FLIES) {
-          const newFly = spawnFly();
-          return [...current, newFly];
-        }
-        return current;
-      });
-    }, currentSpawnInterval);
-
-    return () => clearInterval(spawnTimer);
-  }, [gameStatus, timeLeft]);
-
-  useEffect(() => {
-    if (gameStatus !== 'playing') return;
-
-    // Check if we need to spawn more flies
     if (flies.length < MIN_FLIES) {
       const fliesNeeded = MIN_FLIES - flies.length;
+      const newFlies = [...flies];
       for (let i = 0; i < fliesNeeded; i++) {
-        spawnFly();
+        newFlies.push(spawnFly());
       }
+      setFlies(newFlies);
     }
-  }, [flies.length, gameStatus]);
+  }, [flies.length, gameStatus, spawnFly]);
 
   useEffect(() => {
     if (gameStatus !== 'playing') return;
@@ -241,55 +367,80 @@ export function WhackAFly({ onGameEnd, onSubmitScore }: WhackAFlyProps) {
           let offsetX = 0;
           let offsetY = 0;
 
-          // Calculate pattern offsets
+          // Smoother pattern movements
           switch (fly.pattern) {
             case 'zigzag':
-              offsetX = Math.sin(time * 1.2 + fly.patternOffset) * PATTERN_INTENSITY;
-              offsetY = Math.cos(time * 1.2 + fly.patternOffset) * PATTERN_INTENSITY;
+              offsetX = Math.sin(time * 0.8 + fly.patternOffset) * PATTERN_INTENSITY;
+              offsetY = Math.cos(time * 0.8 + fly.patternOffset) * PATTERN_INTENSITY;
               break;
             case 'circular':
-              offsetX = Math.sin(time * 0.8 + fly.patternOffset) * (PATTERN_INTENSITY * 2);
-              offsetY = Math.cos(time * 0.8 + fly.patternOffset) * (PATTERN_INTENSITY * 2);
+              const radius = PATTERN_INTENSITY * 2;
+              offsetX = Math.sin(time * 0.5 + fly.patternOffset) * radius;
+              offsetY = Math.cos(time * 0.5 + fly.patternOffset) * radius;
               break;
             case 'hover':
-              const hoverPhase = Math.sin(time * 0.5 + fly.patternOffset);
+              const hoverPhase = Math.sin(time * 0.3 + fly.patternOffset);
               if (hoverPhase > 0.7) {
-                return fly;
+                return {
+                  ...fly,
+                  direction: {
+                    x: fly.direction.x * 0.95, // Gradual slowdown
+                    y: fly.direction.y * 0.95
+                  }
+                };
               }
               break;
           }
 
-          // Calculate new position
-          newX += fly.direction.x * fly.speed + offsetX;
-          newY += fly.direction.y * fly.speed + offsetY;
+          // Calculate new position with smoother movement
+          const speedFactor = fly.variant === 'bonus' ? 1.2 : 1;
+          newX += (fly.direction.x * fly.speed * speedFactor + offsetX) * 0.8;
+          newY += (fly.direction.y * fly.speed * speedFactor + offsetY) * 0.8;
 
-          // Keep flies within bounds
-          const flySize = fly.currentSize || MAX_SIZE;
+          // Improved boundary checking with soft bouncing
+          const flySize = fly.currentSize;
           const halfSize = flySize / 2;
+          let newDirectionX = fly.direction.x;
+          let newDirectionY = fly.direction.y;
 
-          // Bounce off screen edges
           if (newX < SCREEN_PADDING + halfSize) {
             newX = SCREEN_PADDING + halfSize;
-            fly.direction.x *= -1;
-          }
-          if (newX > SCREEN_WIDTH - SCREEN_PADDING - halfSize) {
+            newDirectionX = Math.abs(fly.direction.x) * BOUNCE_DAMPENING;
+          } else if (newX > SCREEN_WIDTH - SCREEN_PADDING - halfSize) {
             newX = SCREEN_WIDTH - SCREEN_PADDING - halfSize;
-            fly.direction.x *= -1;
+            newDirectionX = -Math.abs(fly.direction.x) * BOUNCE_DAMPENING;
           }
+
           if (newY < SCREEN_PADDING + halfSize) {
             newY = SCREEN_PADDING + halfSize;
-            fly.direction.y *= -1;
-          }
-          if (newY > SCREEN_HEIGHT - SCREEN_PADDING - halfSize) {
+            newDirectionY = Math.abs(fly.direction.y) * BOUNCE_DAMPENING;
+          } else if (newY > SCREEN_HEIGHT - SCREEN_PADDING - halfSize) {
             newY = SCREEN_HEIGHT - SCREEN_PADDING - halfSize;
-            fly.direction.y *= -1;
+            newDirectionY = -Math.abs(fly.direction.y) * BOUNCE_DAMPENING;
+          }
+
+          // Gradually move towards center
+          const centerX = SCREEN_WIDTH / 2;
+          const centerY = SCREEN_HEIGHT / 2;
+          const centerPull = 0.001;
+          newDirectionX += (centerX - newX) * centerPull;
+          newDirectionY += (centerY - newY) * centerPull;
+
+          // Normalize direction vector
+          const magnitude = Math.sqrt(newDirectionX ** 2 + newDirectionY ** 2);
+          if (magnitude > 0) {
+            newDirectionX /= magnitude;
+            newDirectionY /= magnitude;
           }
 
           return {
             ...fly,
             x: newX,
             y: newY,
-            direction: fly.direction,
+            direction: {
+              x: newDirectionX,
+              y: newDirectionY
+            }
           };
         })
       );
@@ -299,103 +450,158 @@ export function WhackAFly({ onGameEnd, onSubmitScore }: WhackAFlyProps) {
     return () => cancelAnimationFrame(animationFrame);
   }, [flies, gameStatus]);
 
-  const handleSubmitScore = () => {
-    if (playerName && onSubmitScore) {
-      onSubmitScore(score, playerName);
-      setShowNameInput(false);
-      setPlayerName('');
-    }
+  // Add render function
+  const renderGame = () => {
+    console.log('Rendering game with:', {
+      fliesCount: flies.length,
+      gameStatus,
+      screenDims: `${SCREEN_WIDTH}x${SCREEN_HEIGHT}`
+    });
+
+    return (
+      <View style={styles.container}>
+        {/* Game Header */}
+        <View style={styles.header}>
+          <Text style={styles.text}>Score: {score}</Text>
+          <Text style={styles.text}>Time: {timeLeft}</Text>
+        </View>
+
+        {/* Game Area */}
+        <View style={styles.gameArea}>
+          {flies.map((fly) => (
+            <TouchableWithoutFeedback
+              key={fly.key}
+              onPress={() => handleFlyPress(fly)}
+            >
+              <View
+                style={[
+                  styles.flyWrapper,
+                  {
+                    transform: [
+                      { translateX: fly.x },
+                      { translateY: fly.y }
+                    ],
+                    width: fly.currentSize,
+                    height: fly.currentSize,
+                  },
+                ]}
+              >
+                <CrossPlatformImage
+                  source={require('../assets/fly.png')}
+                  style={styles.flyImage}
+                  resizeMode="contain"
+                />
+              </View>
+            </TouchableWithoutFeedback>
+          ))}
+        </View>
+
+        {/* Debug Overlay */}
+        {__DEV__ && (
+          <View style={styles.debugOverlay}>
+            <Text style={styles.debugText}>Flies: {flies.length}</Text>
+            <Text style={styles.debugText}>Status: {gameStatus}</Text>
+            <Text style={styles.debugText}>Screen: {SCREEN_WIDTH}x{SCREEN_HEIGHT}</Text>
+          </View>
+        )}
+      </View>
+    );
   };
 
-  const renderGameOver = () => (
-    <View style={styles.gameOver}>
-      <Text style={styles.gameOverText}>Game Over!</Text>
-      <Text style={styles.scoreText}>Final Score: {score}</Text>
-      
-      {showNameInput ? (
-        <View style={styles.nameInputContainer}>
-          <TextInput
-            style={styles.nameInput}
-            placeholder="Enter your name"
-            maxLength={20}
-            onChangeText={setPlayerName}
-            value={playerName}
-          />
-          <TouchableOpacity 
-            style={styles.submitButton}
-            onPress={handleSubmitScore}
-          >
-            <Text style={styles.buttonText}>Submit Score</Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <TouchableOpacity 
-          style={styles.startButton}
-          onPress={startGame}
-        >
-          <Text style={styles.startText}>Play Again</Text>
-        </TouchableOpacity>
-      )}
-    </View>
-  );
+  // Add useEffect for game initialization
+  useEffect(() => {
+    console.log('Component mounted, starting game directly');
+    startGame(); // Remove the delay and start immediately
+  }, [startGame]);
+
+  // Add a debug effect to monitor state changes
+  useEffect(() => {
+    console.log('Game state updated:', {
+      status: gameStatus,
+      fliesCount: flies.length,
+      timeLeft,
+      screenDimensions: `${SCREEN_WIDTH}x${SCREEN_HEIGHT}`
+    });
+  }, [gameStatus, flies.length, timeLeft]);
+
+  // Add spawn control effect
+  useEffect(() => {
+    if (gameStatus !== 'playing') return;
+
+    console.log('Setting up spawn interval');
+    const spawnInterval = setInterval(() => {
+      setFlies(prevFlies => {
+        if (prevFlies.length < MAX_FLIES) {
+          console.log('Spawning new fly, current count:', prevFlies.length);
+          return [...prevFlies, spawnFly()];
+        }
+        return prevFlies;
+      });
+    }, SPAWN_INTERVAL);
+
+    return () => clearInterval(spawnInterval);
+  }, [gameStatus, spawnFly]);
+
+  // Add movement effect
+  useEffect(() => {
+    if (gameStatus !== 'playing') return;
+
+    console.log('Setting up movement interval');
+    const movementInterval = setInterval(() => {
+      setFlies(prevFlies => {
+        console.log('Moving flies, count:', prevFlies.length);
+        return prevFlies.map(updateFlyPosition);
+      });
+    }, 16); // ~60fps
+
+    return () => clearInterval(movementInterval);
+  }, [gameStatus, updateFlyPosition]);
+
+  // Add this effect to monitor flies state
+  useEffect(() => {
+    console.log('Flies state changed:', {
+      count: flies.length,
+      positions: flies.map(f => ({ x: Math.round(f.x), y: Math.round(f.y) }))
+    });
+  }, [flies]);
+
+  // Add this effect to monitor fly spawning
+  useEffect(() => {
+    if (gameStatus === 'playing' && flies.length === 0) {
+      console.log('No flies detected in playing state, forcing spawn');
+      const initialFlies: FlyPosition[] = Array.from({ length: INITIAL_FLIES }, () => ({
+        key: Date.now() + Math.random(),
+        x: Math.random() * (SCREEN_WIDTH - MIN_SIZE - SCREEN_PADDING * 2) + SCREEN_PADDING,
+        y: Math.random() * (SCREEN_HEIGHT - MIN_SIZE - SCREEN_PADDING * 2) + SCREEN_PADDING,
+        direction: {
+          x: (Math.random() * 2 - 1) * MAX_SPEED,
+          y: (Math.random() * 2 - 1) * MAX_SPEED,
+        },
+        speed: MIN_SPEED + Math.random() * (MAX_SPEED - MIN_SPEED),
+        pattern: 'straight',
+        patternOffset: 0,
+        currentSize: MIN_SIZE,
+        sizeDirection: 'growing',
+        variant: 'normal',
+        points: 1
+      }));
+      setFlies(initialFlies);
+    }
+  }, [gameStatus, flies.length]);
+
+  // Add this check at the top of the component
+  useEffect(() => {
+    try {
+      const flyImage = require('../assets/fly.png');
+      console.log('Fly image loaded:', flyImage);
+    } catch (error) {
+      console.error('Failed to load fly image:', error);
+    }
+  }, []);
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.text}>Score: {score}</Text>
-        <Text style={styles.text}>Time: {timeLeft}</Text>
-        <Text style={styles.text}>High Score: {highScore}</Text>
-      </View>
-
-      {gameStatus === 'idle' && (
-        <TouchableWithoutFeedback onPress={startGame}>
-          <View style={styles.startButton}>
-            <Text style={styles.startText}>Start Game</Text>
-          </View>
-        </TouchableWithoutFeedback>
-      )}
-
-      {gameStatus === 'ended' && (
-        renderGameOver()
-      )}
-
-      {flies.map(fly => (
-        <TouchableWithoutFeedback 
-          key={fly.key} 
-          onPress={() => handleFlyPress(fly.key, { top: fly.y, left: fly.x })}
-        >
-          <Animated.View 
-            style={[
-              styles.fly, 
-              { 
-                left: fly.x - fly.currentSize/2, 
-                top: fly.y - fly.currentSize/2,
-                width: fly.currentSize,
-                height: fly.currentSize,
-                transform: [
-                  { rotate: `${Math.atan2(fly.direction.y, fly.direction.x)}rad` }
-                ]
-              }
-            ]}
-          >
-            <CrossPlatformImage
-              source={{ uri: '/fly.png' }}
-              style={[
-                styles.flyImage,
-                { opacity: Math.max(0.6, fly.currentSize / MAX_SIZE) }
-              ]}
-            />
-          </Animated.View>
-        </TouchableWithoutFeedback>
-      ))}
-
-      {splats.map(splat => (
-        <Splat
-          key={splat.id}
-          position={splat.position}
-          variant={splat.variant}
-        />
-      ))}
+      {renderGame()}
     </View>
   );
 }
@@ -403,82 +609,56 @@ export function WhackAFly({ onGameEnd, onSubmitScore }: WhackAFlyProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#f0f0f0',
+  },
+  gameArea: {
+    flex: 1,
+    position: 'relative',
   },
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    justifyContent: 'space-between',
     padding: 20,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: 'rgba(255,255,255,0.8)',
+    zIndex: 1,
   },
   text: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
+    color: '#333',
   },
-  fly: {
+  flyWrapper: {
     position: 'absolute',
-    zIndex: 1000,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,0,0,0.2)', // Debug background
+    borderWidth: 1,
+    borderColor: 'red',
   },
   flyImage: {
     width: '100%',
     height: '100%',
-    resizeMode: 'contain',
   },
-  startButton: {
+  debugOverlay: {
     position: 'absolute',
-    top: '50%',
-    left: '50%',
-    transform: [{ translateX: -75 }, { translateY: -25 }],
-    backgroundColor: '#4CAF50',
-    padding: 15,
-    borderRadius: 10,
-    width: 150,
-    alignItems: 'center',
-  },
-  startText: {
-    color: 'white',
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  gameOver: {
-    position: 'absolute',
-    top: '40%',
-    left: '50%',
-    transform: [{ translateX: -100 }, { translateY: -50 }],
-    alignItems: 'center',
-  },
-  gameOverText: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 10,
-  },
-  scoreText: {
-    fontSize: 18,
-    marginBottom: 20,
-  },
-  nameInputContainer: {
-    width: '100%',
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  nameInput: {
-    backgroundColor: 'white',
+    top: 0,
+    left: 0,
+    right: 0,
     padding: 10,
-    borderRadius: 5,
-    width: '80%',
-    marginBottom: 10,
-    textAlign: 'center',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    zIndex: 100,
   },
-  submitButton: {
-    backgroundColor: '#4CAF50',
+  debugText: {
+    color: '#fff',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  gameModeButton: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
     padding: 15,
-    borderRadius: 5,
-    width: '80%',
-    alignItems: 'center',
-  },
-  buttonText: {
-    color: 'white',
-    fontSize: 18,
-    fontWeight: 'bold',
+    marginBottom: 15,
+    boxShadow: '0px 2px 3.84px rgba(0,0,0,0.25)',
+    elevation: 5,
   },
 });
