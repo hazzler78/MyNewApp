@@ -10,6 +10,7 @@ import {
   Platform,
   Easing,
   SafeAreaView,
+  GestureResponderEvent,
 } from 'react-native';
 
 // Import the HighScores type
@@ -29,9 +30,7 @@ type HighScores = {
 
 // Type definitions
 interface NZGameProps {
-  onGameOver: (score: number) => void;
-  onExit: () => void;
-  highScores: HighScores;
+  onGameEnd: () => void;
 }
 
 interface Difficulty {
@@ -136,7 +135,7 @@ const easingOptions: EasingFunction[] = [
 const TIME_BONUS_FOR_Z = 1; // Add 1 second when finding a Z
 const TIME_PENALTY_FOR_MISS = -3; // Subtract 3 seconds when missing a Z
 
-export function NZGame({ onGameOver, onExit, highScores }: NZGameProps) {
+export function NZGame({ onGameEnd }: NZGameProps) {
   // State declarations
   const [currentLevel, setCurrentLevel] = useState<number>(0);
   const [grid, setGrid] = useState<string[]>([]);
@@ -164,14 +163,15 @@ export function NZGame({ onGameOver, onExit, highScores }: NZGameProps) {
   // At the start of your component, initialize availableLevels based on the highest score
   useEffect(() => {
     // Get the highest score from nz-challenge
-    const highestScore = highScores?.['nz-challenge']?.[0]?.score || 0;
-    console.log('Highest NZ Challenge score:', highestScore);
+    const highestScore = localStorage.getItem('nz-challenge-high-score');
+    const parsedHighScore = highestScore ? JSON.parse(highestScore) : 0;
+    console.log('Highest NZ Challenge score:', parsedHighScore);
 
     // Calculate available levels based on highest score
     const newAvailableLevels = DIFFICULTIES.reduce((acc: number[], diff, index) => {
-      if (highestScore >= diff.requiredScore) {
+      if (parsedHighScore >= diff.requiredScore) {
         acc.push(index);
-        console.log(`Level ${index} unlocked with score ${highestScore}`);
+        console.log(`Level ${index} unlocked with score ${parsedHighScore}`);
       }
       return acc;
     }, []);
@@ -302,8 +302,8 @@ export function NZGame({ onGameOver, onExit, highScores }: NZGameProps) {
   const handleGameOver = useCallback(() => {
     console.log('Game Over - Final Score:', score); // Debug log
     setGameStatus('ended');
-    onGameOver(score);
-  }, [score, onGameOver]);
+    onGameEnd();
+  }, [score, onGameEnd]);
 
   // Update handlePlayAgain
   const handlePlayAgain = () => {
@@ -314,8 +314,7 @@ export function NZGame({ onGameOver, onExit, highScores }: NZGameProps) {
 
   // Update handleExitToMenu
   const handleExitToMenu = () => {
-    onGameOver(score);
-    onExit();
+    onGameEnd();
   };
 
   // Add this useEffect to initialize the game
@@ -564,12 +563,12 @@ export function NZGame({ onGameOver, onExit, highScores }: NZGameProps) {
     if (gameStatus === 'ended') {
       // Delay the onGameOver call to avoid the render error
       const timer = setTimeout(() => {
-        onGameOver(score);
+        onGameEnd();
       }, 0);
       
       return () => clearTimeout(timer);
     }
-  }, [gameStatus, score, onGameOver]);
+  }, [gameStatus, score, onGameEnd]);
 
   // Move exit handler to a proper event handler
   const handleExit = () => {
@@ -974,3 +973,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 });
+
+function onExit(event: GestureResponderEvent): void {
+  throw new Error('Function not implemented.');
+}

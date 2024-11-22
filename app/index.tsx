@@ -1,25 +1,23 @@
-import { Text, View, StyleSheet, TouchableOpacity, Dimensions, Animated, Platform, Image, TextInput, ScrollView } from "react-native";
+import { Text, View, StyleSheet, TouchableOpacity, Dimensions, Animated, Platform, Image, TextInput, ScrollView, Button } from "react-native";
 import { useState, useEffect, useRef } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NZGame } from './components/NZGame';
+import { WhackAFly } from './components/WhackAFly';
 
 type FlyVariant = 'normal' | 'bonus' | 'negative';
+type GameMode = 'flies' | 'nz-challenge' | 'whack-a-fly';
 
-type Fly = {
-  id: string;
-  position: { top: number; left: number };
-  variant: FlyVariant;
-  timeout?: NodeJS.Timeout;
-  createdAt?: number;
-};
+// Add the GameStatus type here
+type GameStatus = 'idle' | 'countdown' | 'playing' | 'input' | 'ended' | 'nz-game' | 'whack-a-fly' | 'level-select';
 
 type Level = {
   name: string;
   timeLimit: number;
   numberOfFlies: number;
   pointsPerFly: number;
-  colors: readonly [string, string];
+  spawnDelay: number;
+  colors: string[];
 };
 
 type HighScore = {
@@ -27,40 +25,43 @@ type HighScore = {
   date: string;
   playerName: string;
   gameMode: 'flies' | 'nz-challenge';
+  survivalTime?: number; // in seconds
 };
-
-type GameMode = 'flies' | 'nz-challenge';
 
 type HighScores = {
   flies: {
-    [key: number]: HighScore[];
+    [key: number]: Array<HighScore>;
   };
-  'nz-challenge': HighScore[];
+  'whack-a-fly': Array<HighScore>;
+  'nz-challenge': Array<HighScore>;
 };
 
 const LEVELS: Level[] = [
   {
     name: "Beginner",
-    timeLimit: 30,
-    numberOfFlies: 7,
+    timeLimit: 0,
+    numberOfFlies: 1,
     pointsPerFly: 1,
-    colors: ['#a8e6cf', '#dcedc1'] as const
+    spawnDelay: 2000,
+    colors: ['#a8e6cf', '#dcedc1']
   },
   {
     name: "Advanced",
-    timeLimit: 20,
-    numberOfFlies: 5,
+    timeLimit: 0,
+    numberOfFlies: 1,
     pointsPerFly: 1,
-    colors: ['#ffd3b6', '#ffaaa5'] as const
+    spawnDelay: 1000,
+    colors: ['#ffd3b6', '#ffaaa5']
   },
   {
     name: "Expert",
-    timeLimit: 10,
-    numberOfFlies: 3,
+    timeLimit: 0,
+    numberOfFlies: 1,
     pointsPerFly: 1,
-    colors: ['#ff8b94', '#ff6b6b'] as const
+    spawnDelay: 800,
+    colors: ['#ff8b94', '#ff6b6b']
   }
-] as const;
+];
 
 const FLY_POINTS = {
   normal: 1,
@@ -103,13 +104,24 @@ const SPLAT_IMAGES = {
   negative: require('../assets/negative-splat.png')
 } as const;
 
-// Update the Fly component to use the images
-const Fly = ({ id, position, variant, onCatch }: { 
-  id: string; 
-  position: { top: number; left: number }; 
+// First, define the Fly type (if not already defined)
+type Fly = {
+  id: string;
+  position: { top: number; left: number };
   variant: FlyVariant;
-  onCatch: (id: string, position: { top: number; left: number }, variant: FlyVariant) => void 
-}) => {
+  timeout?: NodeJS.Timeout;
+};
+
+// Then define the component props
+interface FlyProps {
+  id: string;
+  position: { top: number; left: number };
+  variant: FlyVariant;
+  onCatch: (id: string, position: { top: number; left: number }, variant: FlyVariant) => void;
+}
+
+// Update the Fly component
+const FlyComponent: React.FC<FlyProps> = ({ id, position, variant, onCatch }) => {
   // Create two animated values for x and y movement
   const wiggleX = useRef(new Animated.Value(0)).current;
   const wiggleY = useRef(new Animated.Value(0)).current;
@@ -242,8 +254,6 @@ const Splat = ({ position, variant }: {
 
 const HIGHSCORES_STORAGE_KEY = '@fly_swatter_highscores';
 
-type GameStatus = 'idle' | 'countdown' | 'playing' | 'input' | 'ended' | 'nz-game';
-
 // Add this type and constants for fly generation
 type FlyDistribution = {
   normal: number;
@@ -254,11 +264,10 @@ type FlyDistribution = {
 const MINIMUM_NORMAL_FLIES = 0.6; // At least 60% normal flies
 const MAXIMUM_NEGATIVE_FLIES = 0.2; // Maximum 20% negative flies
 const MAXIMUM_BONUS_FLIES = 0.2; // Maximum 20% bonus flies
-
 // Add this function to check and correct fly distribution
 const correctFlyDistribution = (flies: Fly[]): Fly[] => {
-  const distribution = flies.reduce((acc, fly) => {
-    acc[fly.variant]++;
+  const distribution = flies.reduce<Record<FlyVariant, number>>((acc, fly) => {
+    acc[fly.variant] = (acc[fly.variant] || 0) + 1;
     return acc;
   }, { normal: 0, bonus: 0, negative: 0 });
 
@@ -363,9 +372,19 @@ const validateLevel = (level: number) => {
   };
 };
 
-export default function Index() {
+// Constants for game rules
+const MAX_FLIES = 20;
+
+// Add this helper function to format time
+const formatTime = (seconds: number) => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+};
+
+export default function App() {
   const [count, setCount] = useState(0);
-  const [timeLeft, setTimeLeft] = useState<number>(0);
+  const [timeLeft, setTimeLeft] = useState(LEVELS[0].timeLimit);
   const [isPlaying, setIsPlaying] = useState(false);
   const [highScores, setHighScores] = useState<HighScores>({
     flies: {
@@ -373,19 +392,24 @@ export default function Index() {
       1: [],
       2: []
     },
+    'whack-a-fly': [],
     'nz-challenge': []
   });
-  const [splats, setSplats] = useState<Array<{top: number; left: number; variant: FlyVariant}>>([]);
-  const [countdown, setCountdown] = useState<number | null>(null);
+  const [splats, setSplats] = useState<Array<{ id: string; position: { top: number; left: number }; variant: FlyVariant }>>([]);
+  const [countdown, setCountdown] = useState(3);
   const [gameStatus, setGameStatus] = useState<GameStatus>('idle');
   const [flies, setFlies] = useState<Fly[]>([]);
-  const [currentLevel, setCurrentLevel] = useState<number>(0);
+  const [currentLevel, setCurrentLevel] = useState(0);
   const [score, setScore] = useState(0);
   const [isNewHighScore, setIsNewHighScore] = useState(false);
   const [playerName, setPlayerName] = useState<string>('');
   const [showNameInput, setShowNameInput] = useState(false);
   const [gameMode, setGameMode] = useState<GameMode>('flies');
   const [showHighScores, setShowHighScores] = useState(false);
+  const [currentDifficulty, setCurrentDifficulty] = useState(1);
+  const [lastSpawnTime, setLastSpawnTime] = useState(Date.now());
+  const [gameStartTime, setGameStartTime] = useState<number>(0);
+  const [currentTime, setCurrentTime] = useState(0);
 
   // Move debug function here, after all state declarations
   const debugHighScores = (message: string) => {
@@ -412,16 +436,10 @@ export default function Index() {
 
   // New function to handle both level selection and game start
   const startGameWithLevel = (levelIndex: number) => {
+    console.log('Starting game with level:', levelIndex);
     const levelConfig = LEVELS[levelIndex];
     
-    console.log('Starting game with level:', {
-      index: levelIndex,
-      name: levelConfig.name,
-      flies: levelConfig.numberOfFlies,
-      time: levelConfig.timeLimit
-    });
-
-    // Set everything in sequence
+    // Initial setup
     setCurrentLevel(levelIndex);
     setFlies([]);
     setSplats([]);
@@ -429,53 +447,86 @@ export default function Index() {
     setTimeLeft(levelConfig.timeLimit);
     setGameStatus('countdown');
     setCountdown(3);
-    setIsPlaying(false);
-
-    const startGameplay = () => {
-      const gameConfig = LEVELS[levelIndex]; // Use levelIndex directly
-      console.log('Starting gameplay for level:', {
-        index: levelIndex,
-        name: gameConfig.name,
-        flies: gameConfig.numberOfFlies,
-        time: gameConfig.timeLimit
-      });
-
-      setGameStatus('playing');
-      setTimeLeft(gameConfig.timeLimit);
-      setIsPlaying(true);
-      
-      // Create initial flies
-      const initialFlies: Fly[] = [];
-      for (let i = 0; i < gameConfig.numberOfFlies; i++) {
-        initialFlies.push({
-          id: `fly-${Date.now()}-${Math.random()}`,
-          position: generateNewFlyPosition(),
-          variant: 'normal'
-        });
-      }
-
-      console.log('Created flies for level:', {
-        level: gameConfig.name,
-        created: initialFlies.length,
-        expected: gameConfig.numberOfFlies,
-        timeSet: gameConfig.timeLimit
-      });
-      
-      setFlies(initialFlies);
-    };
-
-    // Start countdown
-    const countdownTimer = setInterval(() => {
-      setCountdown((prev: number | null) => {
-        if (prev === null || prev <= 1) {
-          clearInterval(countdownTimer);
-          setTimeout(startGameplay, 1000);
-          return null;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    
+    console.log('Game initialized:', {
+      level: levelIndex,
+      timeLimit: levelConfig.timeLimit,
+      status: 'countdown'
+    });
   };
+
+  // Add this new effect for handling countdown
+  useEffect(() => {
+    if (gameStatus === 'countdown') {
+      console.log('Starting countdown sequence');
+      let count = 3;
+      
+      const countdownTimer = setInterval(() => {
+        count--;
+        console.log('Countdown:', count);
+        
+        if (count === 0) {
+          console.log('Countdown complete');
+          clearInterval(countdownTimer);
+          
+          // Transition to gameplay
+          setGameStatus('playing');
+          setIsPlaying(true);
+          setTimeLeft(LEVELS[currentLevel].timeLimit);
+          setGameStartTime(Date.now());
+          
+          console.log('Game started with:', {
+            status: 'playing',
+            isPlaying: true,
+            timeLeft: LEVELS[currentLevel].timeLimit
+          });
+        } else {
+          setCountdown(count);
+        }
+      }, 1000);
+
+      return () => clearInterval(countdownTimer);
+    }
+  }, [gameStatus, currentLevel]);
+
+  // Update the game timer effect
+  useEffect(() => {
+    let timer: NodeJS.Timeout | undefined;
+
+    console.log('Timer Effect State:', {
+      isPlaying,
+      gameStatus,
+      timeLeft,
+      shouldStart: isPlaying && gameStatus === 'playing' && timeLeft > 0
+    });
+
+    if (isPlaying && gameStatus === 'playing' && timeLeft > 0) {
+      console.log('Starting gameplay timer');
+      
+      timer = setInterval(() => {
+        setTimeLeft((prev) => {
+          const newTime = prev - 1;
+          console.log('Time remaining:', newTime);
+          
+          if (newTime <= 0) {
+            console.log('Game over - time up');
+            clearInterval(timer);
+            setIsPlaying(false);
+            setGameStatus('ended');
+            return 0;
+          }
+          return newTime;
+        });
+      }, 1000);
+
+      return () => {
+        if (timer) {
+          clearInterval(timer);
+          console.log('Clearing gameplay timer');
+        }
+      };
+    }
+  }, [isPlaying, gameStatus, timeLeft]);
 
   // Add some console logs to help us debug
   useEffect(() => {
@@ -499,6 +550,7 @@ export default function Index() {
               1: [],
               2: []
             },
+            'whack-a-fly': [],
             'nz-challenge': []
           };
           await AsyncStorage.setItem(HIGHSCORES_STORAGE_KEY, JSON.stringify(initialScores));
@@ -512,6 +564,7 @@ export default function Index() {
             1: [],
             2: []
           },
+          'whack-a-fly': [],
           'nz-challenge': []
         });
       }
@@ -534,154 +587,59 @@ export default function Index() {
     saveHighScores();
   }, [highScores]);
 
-  // Update the game timer effect
-  useEffect(() => {
-    let gameTimer: NodeJS.Timeout | undefined;
-    
-    if (isPlaying && gameStatus === 'playing') {
-      console.log('Starting game timer with:', timeLeft);
-      
-      gameTimer = setInterval(() => {
-        setTimeLeft(prev => {
-          const newTime = prev - 1;
-          console.log('Time remaining:', newTime);
-          
-          if (newTime <= 0) {
-            clearInterval(gameTimer);
-            setIsPlaying(false);
-            
-            // Check for high score
-            const currentScores = gameMode === 'flies' 
-              ? (highScores.flies[currentLevel] || [])
-              : highScores['nz-challenge'];
-            
-            const shouldAdd = currentScores.length < 10 || 
-              currentScores.some(existingScore => score > existingScore.score);
-            
-            if (shouldAdd) {
-              setGameStatus('input');
-              setShowNameInput(true);
-            } else {
-              setGameStatus('ended');
-            }
-            return 0;
-          }
-          return newTime;
-        });
-      }, 1000);
-
-      return () => {
-        if (gameTimer) {
-          console.log('Clearing game timer');
-          clearInterval(gameTimer);
-        }
-      };
-    }
-  }, [isPlaying, gameStatus]);
-
-  const catchFly = (flyId: string, position: { top: number; left: number }, variant: FlyVariant) => {
-    if (!isPlaying || timeLeft <= 0) return;
-    
-    setSplats(prev => [...prev, { ...position, variant }]);
+  const catchFly = (id: string, position: { top: number; left: number }, variant: FlyVariant) => {
+    // Update score
     setScore(prev => prev + FLY_POINTS[variant]);
     
-    // Remove caught fly
-    setFlies(prev => {
-      const caughtFly = prev.find(f => f.id === flyId);
-      if (caughtFly?.timeout) {
-        clearTimeout(caughtFly.timeout);
-      }
-      
-      const remaining = prev.filter(f => f.id !== flyId);
-      
-      // Only generate new fly if it was a normal fly
-      if (variant === 'normal') {
-        const newFly: Fly = {
-          id: `fly-${Date.now()}-${Math.random()}`,
-          position: generateNewFlyPosition(),
-          variant: 'normal'
-        };
-        return [...remaining, newFly];
-      }
-      
-      return remaining;
-    });
-
-    // Clean up splat after 1 second
+    // Remove the caught fly
+    setFlies(prev => prev.filter(fly => fly.id !== id));
+    
+    // Add splat effect
+    const splatId = `splat-${Date.now()}`;
+    setSplats(prev => [...prev, { id: splatId, position, variant }]);
+    
+    // Remove splat after animation
     setTimeout(() => {
-      setSplats(prev => prev.filter(p => p.top !== position.top || p.left !== position.left));
+      setSplats(prev => prev.filter(splat => splat.id !== splatId));
     }, 1000);
   };
 
   // Update the useEffect that manages flies
   useEffect(() => {
-    if (isPlaying && gameStatus === 'playing') {
-      const targetFlies = LEVELS[currentLevel].numberOfFlies;
-      
-      // Regular fly management
-      if (flies.length < targetFlies) {
-        setFlies(prev => {
-          const newFlies = [...prev];
-          while (newFlies.length < targetFlies) {
-            newFlies.push({
-              id: `fly-${Date.now()}-${Math.random()}`,
-              position: generateNewFlyPosition(),
-              variant: 'normal' // Only generate normal flies here
-            });
-          }
-          return newFlies;
-        });
-      }
+    if (gameStatus !== 'playing') return;
 
-      // Special fly spawning system
-      const spawnSpecialFly = () => {
-        const SPECIAL_FLY_DURATION = 2000; // 2 seconds (reduced from 3)
-        
-        setFlies(prev => {
-          // Randomly choose between bonus and negative
-          const isBonus = Math.random() < 0.6; // 60% chance for bonus flies
-          const specialFly: Fly = {
-            id: `special-${Date.now()}`,
-            position: generateNewFlyPosition(),
-            variant: isBonus ? 'bonus' : 'negative',
-            createdAt: Date.now()
-          };
-
-          // Set timeout to remove the special fly
-          const timeout = setTimeout(() => {
-            setFlies(current => 
-              current.filter(f => f.id !== specialFly.id)
-            );
-          }, SPECIAL_FLY_DURATION);
-
-          specialFly.timeout = timeout;
-          return [...prev, specialFly];
-        });
-      };
-
-      // More frequent special fly spawning
-      const spawnInterval = setInterval(() => {
-        const shouldSpawn = Math.random() < 0.3; // 30% chance every interval (increased from 20%)
-        if (shouldSpawn) {
-          spawnSpecialFly();
+    const spawnInterval = setInterval(() => {
+      setFlies(prev => {
+        // Check if game should end
+        if (prev.length >= MAX_FLIES) {
+          setGameStatus('ended');
+          return prev;
         }
-      }, 1500); // Check every 1.5 seconds (reduced from 2)
 
-      // Cleanup
-      return () => {
-        clearInterval(spawnInterval);
-        // Clear any existing special fly timeouts
-        setFlies(current => {
-          current.forEach(fly => {
-            if (fly.timeout) {
-              clearTimeout(fly.timeout);
-            }
-          });
-          return current;
-        });
-      };
-    }
-  }, [isPlaying, gameStatus, currentLevel]);
+        const now = Date.now();
+        const gameTimeElapsed = (now - gameStartTime) / 1000; // Time elapsed in seconds
+        
+        // Calculate difficulty multiplier based on time
+        // Every minute reduces spawn delay by 20% (max 80% reduction)
+        const difficultyMultiplier = Math.max(0.2, 1 - (gameTimeElapsed / 60) * 0.2);
+        
+        // Apply difficulty to base spawn delay
+        const currentDelay = LEVELS[currentLevel].spawnDelay * difficultyMultiplier;
+        
+        if (now - lastSpawnTime >= currentDelay) {
+          setLastSpawnTime(now);
+          return [...prev, {
+            id: Math.random().toString(),
+            position: generateNewFlyPosition(),
+            variant: generateBalancedFlyVariant(prev)
+          }];
+        }
+        return prev;
+      });
+    }, 100);
+
+    return () => clearInterval(spawnInterval);
+  }, [gameStatus, currentLevel, lastSpawnTime, gameStartTime]);
 
   // Add reset function near other game functions
   const handleResetPress = () => {
@@ -693,6 +651,7 @@ export default function Index() {
           1: [],
           2: []
         },
+        'whack-a-fly': [],
         'nz-challenge': []
       };
       const saveScores = async () => {
@@ -729,7 +688,7 @@ export default function Index() {
     console.log('High scores updated:', highScores);
   }, [highScores]);
 
-  // Update the NameInputOverlay component to be more mobile-friendly
+  // Update the NameInputOverlay component to use correct style names
   const NameInputOverlay = () => (
     <View style={styles.nameInputOverlay}>
       <View style={styles.nameInputDialog}>
@@ -738,8 +697,7 @@ export default function Index() {
         <TextInput
           style={[
             styles.nameInput,
-            Platform.OS === 'ios' && styles.nameInputIOS,
-            Platform.OS === 'android' && styles.nameInputAndroid
+            Platform.OS === 'ios' ? styles.nameInputBorder : styles.nameInputOutline
           ]}
           value={playerName}
           onChangeText={setPlayerName}
@@ -766,11 +724,14 @@ export default function Index() {
   const submitScore = async () => {
     if (!playerName) return;
     
+    const survivalTime = Math.floor((Date.now() - gameStartTime) / 1000);
+    
     const newScore: HighScore = {
       score,
       date: new Date().toLocaleDateString(),
       playerName: playerName.toUpperCase(),
-      gameMode
+      gameMode: gameMode === 'whack-a-fly' ? 'flies' : gameMode,
+      survivalTime
     };
 
     try {
@@ -881,54 +842,105 @@ export default function Index() {
 
   // Add this near the top of the component
   const renderGameModeSelection = () => (
-    <View style={styles.buttonContainer}>
-      <Text style={styles.instructions}>Select Game Mode:</Text>
-      <TouchableOpacity
-        style={[styles.levelButton, gameMode === 'flies' && styles.selectedLevel]}
-        onPress={() => setGameMode('flies')}
-      >
-        <Text style={styles.buttonText}>Classic Fly Swatter</Text>
-        <Text style={styles.levelDetails}>
-          Catch flies to score points!
-        </Text>
-      </TouchableOpacity>
+    <View style={styles.menuContainer}>
+      <Text style={styles.menuHeader}>Select Game Mode</Text>
       
-      <TouchableOpacity
-        style={[styles.levelButton, gameMode === 'nz-challenge' && styles.selectedLevel]}
-        onPress={() => setGameMode('nz-challenge')}
-      >
-        <Text style={styles.buttonText}>N vs. Z Challenge</Text>
-        <Text style={styles.levelDetails}>
-          Find the hidden Z!
-        </Text>
-      </TouchableOpacity>
-      
-      {gameMode === 'flies' ? (
-        <>
-          <Text style={styles.instructions}>Select Difficulty:</Text>
-          {LEVELS.map((level, index) => (
-            <TouchableOpacity
-              key={index}
-              style={[styles.levelButton, currentLevel === index && styles.selectedLevel]}
-              onPress={() => selectLevel(index)}
-            >
-              <Text style={styles.buttonText}>{level.name}</Text>
-              <Text style={styles.levelDetails}>
-                Time: {level.timeLimit}s • Flies: {level.numberOfFlies}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </>
-      ) : (
+      <View style={styles.gameModeList}>
+        {/* Classic Mode */}
         <TouchableOpacity 
-          style={styles.startButton}
+          style={styles.gameModeButton}
           onPress={() => {
-            console.log('Starting NZ Challenge');
+            setGameMode('flies');
+            setGameStatus('level-select');  // New status for level selection
+          }}
+        >
+          <View style={styles.gameModeContent}>
+            <Image 
+              source={require('../assets/fly.png')} 
+              style={styles.modeIcon}
+            />
+            <View style={styles.modeTextContainer}>
+              <Text style={styles.modeName}>Classic Mode</Text>
+              <Text style={styles.modeDescription}>Catch flies in multiple difficulty levels</Text>
+            </View>
+            <Text style={styles.arrowIcon}>→</Text>
+          </View>
+        </TouchableOpacity>
+
+        {/* N vs Z Challenge */}
+        <TouchableOpacity 
+          style={styles.gameModeButton}
+          onPress={() => {
+            setGameMode('nz-challenge');
             setGameStatus('nz-game');
           }}
         >
-          <Text style={styles.buttonText}>Start N vs. Z Challenge</Text>
+          <View style={styles.gameModeContent}>
+            <Text style={styles.letterIcon}>N</Text>
+            <View style={styles.modeTextContainer}>
+              <Text style={styles.modeName}>N vs Z Challenge</Text>
+              <Text style={styles.modeDescription}>Find the hidden Z among the Ns</Text>
+            </View>
+            <Text style={styles.arrowIcon}>→</Text>
+          </View>
         </TouchableOpacity>
+
+        {/* Whack-A-Fly */}
+        <TouchableOpacity 
+          style={styles.gameModeButton}
+          onPress={() => {
+            setGameMode('whack-a-fly');
+            setGameStatus('whack-a-fly');
+          }}
+        >
+          <View style={styles.gameModeContent}>
+            <Image 
+              source={require('../assets/splat.png')} 
+              style={styles.modeIcon}
+            />
+            <View style={styles.modeTextContainer}>
+              <Text style={styles.modeName}>Whack-A-Fly</Text>
+              <Text style={styles.modeDescription}>Fast-paced fly swatting action</Text>
+            </View>
+            <Text style={styles.arrowIcon}>→</Text>
+          </View>
+        </TouchableOpacity>
+      </View>
+
+      <TouchableOpacity 
+        style={styles.highScoresButton}
+        onPress={() => setShowHighScores(true)}
+      >
+        <Text style={styles.highScoresText}>🏆 High Scores</Text>
+      </TouchableOpacity>
+
+      {/* Add this modal */}
+      {showHighScores && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>High Scores</Text>
+            <ScrollView style={styles.scoresScrollView}>
+              {LEVELS.map((level, index) => (
+                <View key={index} style={styles.levelScores}>
+                  <Text style={styles.levelTitle}>{level.name}</Text>
+                  {(highScores.flies[index] || []).map((score, scoreIndex) => (
+                    <View key={scoreIndex} style={styles.highScoreRow}>
+                      <Text style={styles.rank}>#{scoreIndex + 1}</Text>
+                      <Text style={styles.playerName}>{score.playerName}</Text>
+                      <Text style={styles.scoreValue}>{score.score}</Text>
+                    </View>
+                  ))}
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity 
+              style={styles.closeButton}
+              onPress={() => setShowHighScores(false)}
+            >
+              <Text style={styles.buttonText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       )}
     </View>
   );
@@ -960,447 +972,344 @@ export default function Index() {
   };
 
   // Define renderHighScores inside the component
-  const renderHighScores = () => {
-    if (gameMode === 'flies') {
-      return LEVELS.map((level, index) => (
-        <View key={index} style={styles.levelScores}>
-          <Text style={styles.levelTitle}>{level.name}</Text>
-          {(highScores.flies[index] || []).map((score, scoreIndex) => (
-            <View key={scoreIndex} style={styles.highScoreRow}>
-              <Text style={styles.rank}>#{scoreIndex + 1}</Text>
-              <Text style={styles.playerName}>{score.playerName}</Text>
-              <Text style={styles.scoreValue}>{score.score}</Text>
+  const renderHighScores = () => (
+    <View style={styles.modalOverlay}>
+      <View style={styles.modalContent}>
+        <Text style={styles.modalTitle}>High Scores</Text>
+        
+        {/* Classic Mode Scores */}
+        <Text style={styles.gameModeTitle}>Classic Mode</Text>
+        <ScrollView style={styles.scoresScrollView}>
+          {LEVELS.map((level, index) => (
+            <View key={`classic-${index}`} style={styles.levelScores}>
+              <Text style={styles.levelTitle}>{level.name}</Text>
+              {(highScores.flies[index] || [])
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 10)
+                .map((score, scoreIndex) => (
+                  <View key={scoreIndex} style={styles.highScoreRow}>
+                    <Text style={styles.rank}>#{scoreIndex + 1}</Text>
+                    <Text style={styles.playerName}>{score.playerName}</Text>
+                    <Text style={styles.scoreValue}>{score.score}</Text>
+                  </View>
+                ))}
             </View>
           ))}
-        </View>
-      ));
-    } else {
-      return (
-        <View style={styles.levelScores}>
-          <Text style={styles.levelTitle}>N vs. Z Challenge</Text>
-          {highScores['nz-challenge'].map((score, index) => (
-            <View key={index} style={styles.highScoreRow}>
-              <Text style={styles.rank}>#{index + 1}</Text>
-              <Text style={styles.playerName}>{score.playerName}</Text>
-              <Text style={styles.scoreValue}>{score.score}</Text>
+        </ScrollView>
+
+        {/* Whack-a-Fly Scores */}
+        <Text style={styles.gameModeTitle}>Whack-a-Fly</Text>
+        <ScrollView style={styles.scoresScrollView}>
+          {(highScores['whack-a-fly'] || [])
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 10)
+            .map((score, index) => (
+              <View key={`whack-${index}`} style={styles.highScoreRow}>
+                <Text style={styles.rank}>#{index + 1}</Text>
+                <Text style={styles.playerName}>{score.playerName}</Text>
+                <Text style={styles.scoreValue}>{score.score}</Text>
+              </View>
+            ))}
+        </ScrollView>
+
+        <TouchableOpacity 
+          style={styles.closeButton}
+          onPress={() => setShowHighScores(false)}
+        >
+          <Text style={styles.buttonText}>Close</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  // First, let's add a level selection screen
+  const renderLevelSelection = () => (
+    <View style={styles.menuContainer}>
+      <Text style={styles.menuHeader}>Select Difficulty</Text>
+      <View style={styles.levelList}>
+        {LEVELS.map((level, index) => {
+          const bestTime = highScores.flies[index]
+            ?.reduce((max, score) => Math.max(max, score.survivalTime || 0), 0);
+          
+          return (
+            <TouchableOpacity 
+              key={index}
+              style={styles.levelButton}
+              onPress={() => {
+                setCurrentLevel(index);
+                setGameStatus('countdown');
+              }}
+            >
+              <Text style={styles.modeName}>{level.name}</Text>
+              <Text style={styles.modeDescription}>
+                Initial Flies: {level.numberOfFlies}
+                {bestTime > 0 && `\nBest Time: ${Math.floor(bestTime / 60)}:${(bestTime % 60).toString().padStart(2, '0')}`}
+              </Text>
+            </TouchableOpacity>
+          )
+        })}
+      </View>
+    </View>
+  );
+
+  // Update the game mode selection handler
+  const handleClassicModeSelect = () => {
+    setGameMode('flies');
+    setGameStatus('level-select'); // New status for level selection
+  };
+
+  // Update renderContent to include level selection
+  const renderContent = () => {
+    switch (gameStatus) {
+      case 'idle':
+        return renderGameModeSelection();
+      case 'level-select':
+        return renderLevelSelection();
+      case 'countdown':
+        return (
+          <LinearGradient
+            colors={LEVELS[currentLevel].colors as string[]}
+            style={styles.container}
+          >
+            <View style={styles.countdownContainer}>
+              <Text style={styles.countdownText}>{countdown}</Text>
             </View>
-          ))}
-        </View>
-      );
+          </LinearGradient>
+        );
+      case 'playing':
+        return (
+          <LinearGradient
+            colors={LEVELS[currentLevel].colors as string[]}
+            style={styles.container}
+          >
+            <View style={styles.header}>
+              <Text style={styles.flyCountText}>Flies: {flies.length}/{MAX_FLIES}</Text>
+              <Text style={styles.timeText}>Time: {formatTime(currentTime)}</Text>
+              <Text style={styles.scoreText}>Score: {score}</Text>
+            </View>
+            {flies.map(fly => (
+              <FlyComponent
+                key={fly.id}
+                id={fly.id}
+                position={fly.position}
+                variant={fly.variant}
+                onCatch={catchFly}
+              />
+            ))}
+            {splats.map(splat => (
+              <Splat
+                key={splat.id}
+                position={splat.position}
+                variant={splat.variant}
+              />
+            ))}
+          </LinearGradient>
+        );
+      case 'nz-game':
+        return <NZGame onGameEnd={() => setGameStatus('ended')} />;
+      case 'whack-a-fly':
+        return <WhackAFly onGameEnd={() => setGameStatus('ended')} />;
+      case 'ended':
+        return renderGameOver();
+      
+      default:
+        return null;
     }
   };
 
-  // Update the return statement to better position the high scores button
+  const renderGameOver = () => (
+    <View style={styles.gameOverContainer}>
+      <Text style={styles.gameOverTitle}>Game Over!</Text>
+      <Text style={styles.gameOverScore}>Final Score: {score}</Text>
+      
+      {showNameInput ? (
+        <NameInputOverlay />
+      ) : (
+        <TouchableOpacity 
+          style={styles.playAgainButton}
+          onPress={() => {
+            setGameStatus('idle');
+            setScore(0);
+            setTimeLeft(LEVELS[currentLevel].timeLimit);
+          }}
+        >
+          <Text style={styles.playAgainButtonText}>Play Again</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+
+  // Update the useEffect that handles game over
+  useEffect(() => {
+    if (gameStatus === 'ended' && !showNameInput) {
+      const currentScores = gameMode === 'flies' 
+        ? (highScores.flies[currentLevel] || [])
+        : highScores['nz-challenge'];
+
+      // Always show input if less than 10 scores or if current score is higher than lowest score
+      const isHighScore = currentScores.length < 10 || 
+        score > Math.min(...currentScores.map(s => s.score), 0);
+
+      console.log('High score check:', { 
+        score, 
+        currentScores: currentScores.map(s => s.score),
+        isHighScore 
+      });
+
+      if (isHighScore) {
+        setShowNameInput(true);
+        setIsNewHighScore(true);
+      }
+    }
+  }, [gameStatus, score, currentLevel, gameMode, highScores]);
+
+  // Add this useEffect to update the timer
+  useEffect(() => {
+    if (gameStatus === 'playing') {
+      const timerInterval = setInterval(() => {
+        setCurrentTime(Math.floor((Date.now() - gameStartTime) / 1000));
+      }, 1000);
+
+      return () => clearInterval(timerInterval);
+    }
+  }, [gameStatus, gameStartTime]);
+
   return (
     <View style={styles.container}>
-      {/* Game header */}
-      <View style={styles.header}>
-        <Text style={styles.title}>
-          {gameMode === 'flies' ? 'Fly Swatter!' : 'N vs. Z Challenge'}
-        </Text>
-        {gameStatus === 'playing' && (
-          <>
-            <Text style={styles.timer}>Time: {timeLeft}s</Text>
-            <Text style={styles.score}>Score: {score}</Text>
-          </>
-        )}
-      </View>
-
-      {/* Fly Game Area */}
-      {(gameStatus === 'playing' || gameStatus === 'countdown') && gameMode === 'flies' && (
-        <LinearGradient
-          colors={LEVELS[currentLevel].colors}
-          style={styles.gameArea}
-        >
-          {gameStatus === 'countdown' && countdown !== null && (
-            <View style={styles.countdownOverlay}>
-              <Text style={styles.countdownText}>{countdown}</Text>
-            </View>
-          )}
-          {flies.map((fly) => (
-            <Fly
-              key={fly.id}
-              id={fly.id}
-              position={fly.position}
-              variant={fly.variant}
-              onCatch={catchFly}
-            />
-          ))}
-          {splats.map((splat, index) => (
-            <Splat
-              key={`splat-${index}`}
-              position={splat}
-              variant={splat.variant}
-            />
-          ))}
-        </LinearGradient>
-      )}
-
-      {/* N vs Z Game */}
-      {gameStatus === 'nz-game' && (
-        <NZGame 
-          onGameOver={handleNZGameOver}
-          onExit={() => setGameStatus('idle')}
-          highScores={highScores}
-        />
-      )}
-
-      {/* Level Selection */}
-      {gameStatus === 'idle' && (
-        <>
-          {renderGameModeSelection()}
-          <TouchableOpacity 
-            style={styles.highScoresButton}
-            onPress={() => setShowHighScores(true)}
-          >
-            <Text style={styles.buttonText}>View High Scores</Text>
-          </TouchableOpacity>
-        </>
-      )}
-
-      {/* High Score Input */}
-      {showNameInput && (
-        <View style={[styles.nameInputOverlay, { zIndex: 3000 }]}>
-          <View style={styles.nameInputDialog}>
-            <Text style={styles.nameInputTitle}>New High Score! 🎉</Text>
-            <Text style={styles.nameInputSubtitle}>Enter your initials:</Text>
-            <TextInput
-              style={styles.nameInput}
-              value={playerName}
-              onChangeText={setPlayerName}
-              maxLength={3}
-              autoCapitalize="characters"
-              autoFocus={Platform.OS === 'web'}
-              keyboardType="default"
-              returnKeyType="done"
-              onSubmitEditing={submitScore}
-            />
-            <TouchableOpacity 
-              style={[styles.button, !playerName && styles.buttonDisabled]}
-              disabled={!playerName}
-              onPress={submitScore}
-            >
-              <Text style={styles.buttonText}>Submit</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      {/* High Scores Modal */}
-      {showHighScores && (
-        <View style={[styles.modalOverlay, { zIndex: 2000 }]}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>High Scores</Text>
-            <ScrollView style={styles.scoresScrollView}>
-              {renderHighScores()}
-            </ScrollView>
-            <TouchableOpacity 
-              style={styles.closeButton}
-              onPress={() => setShowHighScores(false)}
-            >
-              <Text style={styles.buttonText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
+      {renderContent() || null}
+      {/* Your modals and overlays */}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // Base container styles
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    overflow: 'hidden',  // Prevent scrolling
   },
+  
+  // Header styles
   header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     padding: 20,
-    backgroundColor: '#4CAF50',
-    alignItems: 'center',
+    paddingTop: Platform.OS === 'ios' ? 50 : 20,
   },
-  title: {
+  
+  // Game status text styles
+  timeText: {
     fontSize: 24,
     fontWeight: 'bold',
     color: 'white',
   },
-  subtitle: {
-    fontSize: 18,
-    color: 'white',
-    marginTop: 5,
-  },
-  timer: {
-    fontSize: 20,
-    color: 'white',
-    marginTop: 5,
-  },
-  score: {
-    fontSize: 20,
-    color: 'white',
-    marginTop: 5,
-  },
-  buttonContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  instructions: {
+  scoreText: {
     fontSize: 24,
-    marginBottom: 20,
-    textAlign: 'center',
-  },
-  levelButton: {
-    backgroundColor: '#4CAF50',
-    padding: 15,
-    borderRadius: 8,
-    width: '100%',
-    maxWidth: 300,
-    marginVertical: 10,
-    alignItems: 'center',
-  },
-  selectedLevel: {
-    backgroundColor: '#2E7D32',
-  },
-  buttonText: {
-    color: 'white',
-    fontSize: 18,
     fontWeight: 'bold',
-  },
-  levelDetails: {
     color: 'white',
-    fontSize: 14,
-    marginTop: 5,
-    textAlign: 'center',
-    opacity: 0.9,
   },
-  gameArea: {
-    flex: 1,
-    backgroundColor: '#f0f0f0',
-    position: 'relative',
-    overflow: 'hidden',
-    marginTop: 0,
-    marginBottom: 0,
-    paddingHorizontal: 40,
+  flyCountText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: 'white',
   },
-  overlay: {
+
+  // Fly and splat styles
+  fly: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  countdownOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
     zIndex: 1000,
   },
-  countdownText: {
-    fontSize: 100,
-    fontWeight: 'bold',
-    color: 'white',
+  flyImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'contain',
   },
-  gameOver: {
-    fontSize: 48,
-    fontWeight: 'bold',
-    color: 'white',
-    marginBottom: 20,
+  splat: {
+    position: 'absolute',
+    zIndex: 900,
   },
-  finalScore: {
+  splatImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'contain',
+  },
+
+  // Menu and game mode styles
+  menuContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  menuHeader: {
     fontSize: 24,
-    color: 'white',
-    marginBottom: 20,
+    fontWeight: 'bold',
+    marginBottom: 30,
   },
-  button: {
+  gameModeList: {
+    width: '100%',
+    maxWidth: 500,
+  },
+  gameModeButton: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 15,
+    marginBottom: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  gameModeContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  modeIcon: {
+    width: 40,
+    height: 40,
+    marginRight: 15,
+  },
+  modeTextContainer: {
+    flex: 1,
+  },
+  modeName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 5,
+  },
+  modeDescription: {
+    fontSize: 14,
+    color: '#666',
+  },
+  arrowIcon: {
+    fontSize: 24,
+    color: '#666',
+  },
+  letterIcon: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    width: 40,
+    height: 40,
+    textAlign: 'center',
+    lineHeight: 40,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 20,
+    marginRight: 15,
+    color: '#333',
+  },
+
+  // High scores styles
+  highScoresButton: {
     backgroundColor: '#4CAF50',
     padding: 15,
     borderRadius: 8,
     marginTop: 20,
   },
-  fly: {
-    position: 'absolute',
-    width: 50,
-    height: 50,
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 1000,
-  },
-  flyImage: {
-    width: 50,
-    height: 50,
-    resizeMode: 'contain',
-  },
-  splat: {
-    position: 'absolute',
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  splatImage: {
-    width: 40,
-    height: 40,
-    resizeMode: 'contain',
-  },
-  newHighScoreAlert: {
-    position: 'absolute',
-    top: 120,
-    alignSelf: 'center',
-    backgroundColor: 'rgba(255, 215, 0, 0.9)',
-    padding: 10,
-    borderRadius: 8,
-    zIndex: 1000,
-  },
-  newHighScoreText: {
-    color: '#000',
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  nameInputOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 3000,
-  },
-  nameInputDialog: {
-    backgroundColor: 'white',
-    padding: 20,
-    borderRadius: 8,
-    width: '80%',
-    maxWidth: 300,
-    alignItems: 'center',
-  },
-  nameInputTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 10,
-  },
-  nameInputSubtitle: {
-    fontSize: 16,
-    marginBottom: 20,
-  },
-  nameInput: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 4,
-    padding: 10,
-    width: '100%',
-    fontSize: 24,
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  nameInputIOS: {
-    paddingVertical: 12,
-  },
-  nameInputAndroid: {
-    paddingVertical: 8,
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
-  leaderboard: {
-    width: '100%',
-    maxWidth: 400,
-    padding: 20,
-    marginVertical: 20,
-  },
-  leaderboardTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
+  highScoresText: {
     color: 'white',
-    textAlign: 'center',
-    marginBottom: 15,
-  },
-  scoreRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    padding: 10,
-    marginVertical: 2,
-    borderRadius: 4,
-  },
-  rank: {
-    color: 'white',
-    width: 40,
-  },
-  playerName: {
-    color: 'white',
-    width: 80,
-    textAlign: 'center',
-  },
-  scoreValue: {
-    color: 'white',
-    width: 60,
-    textAlign: 'right',
-  },
-  scoreDate: {
-    color: 'white',
-    width: 100,
-    textAlign: 'right',
-    fontSize: 12,
-  },
-  noScores: {
-    color: 'white',
-    textAlign: 'center',
-    fontStyle: 'italic',
-  },
-  bonusFly: {
-    color: '#FFD700',
-  },
-  negativeFly: {
-    color: '#FF4444',
-  },
-  startButton: {
-    backgroundColor: '#4CAF50',
-    padding: 15,
-    borderRadius: 8,
-    width: '100%',
-    maxWidth: 300,
-    marginVertical: 20,
-    alignItems: 'center',
-  },
-  highScoresContainer: {
-    padding: 20,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    borderRadius: 10,
-    margin: 10,
-  },
-  levelScores: {
-    marginBottom: 20,
-  },
-  levelTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 10,
-  },
-  scoreText: {
-    color: '#fff',
-    fontSize: 16,
-    marginBottom: 5,
-  },
-  highScoresButton: {
-    backgroundColor: '#4CAF50',
-    padding: 15,
-    borderRadius: 8,
-    marginTop: 10,
-    marginBottom: 20,  // Add some bottom margin
-    alignSelf: 'center',
-    width: '80%',
-    maxWidth: 300,
   },
   modalOverlay: {
     position: 'absolute',
@@ -1411,33 +1320,111 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.7)',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 2000,  // Increased zIndex to ensure it's above everything
+    zIndex: 2000,
   },
   modalContent: {
-    backgroundColor: '#333',
+    backgroundColor: 'white',
+    borderRadius: 15,
     padding: 20,
-    borderRadius: 10,
-    width: '80%',
-    maxHeight: '80%',
+    width: '90%',
+    maxWidth: 500,
+    maxHeight: '90%',
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  gameModeTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginTop: 15,
+    marginBottom: 10,
+    color: '#333',
   },
   scoresScrollView: {
-    maxHeight: '80%',
+    maxHeight: 200,
+  },
+  levelScores: {
+    marginBottom: 15,
+  },
+  levelTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 5,
+    color: '#666',
   },
   highScoreRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    padding: 10,
-    marginVertical: 2,
-    borderRadius: 5,
+    paddingVertical: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
   },
-  modalTitle: {
-    fontSize: 24,
+  rank: {
+    width: 40,
+    fontSize: 16,
+    color: '#888',
+  },
+  playerName: {
+    flex: 1,
+    fontSize: 16,
+    marginHorizontal: 10,
+  },
+  scoreValue: {
+    width: 60,
+    fontSize: 16,
+    textAlign: 'right',
     fontWeight: 'bold',
-    color: '#fff',
-    textAlign: 'center',
+  },
+
+  // Game over styles
+  gameOverContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.8)',
+  },
+  gameOverTitle: {
+    fontSize: 36,
+    fontWeight: 'bold',
+    color: 'white',
     marginBottom: 20,
+  },
+  gameOverScore: {
+    fontSize: 24,
+    color: 'white',
+    marginBottom: 30,
+  },
+  gameOverText: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: 'white',
+    marginBottom: 20,
+  },
+
+  // Button styles
+  button: {
+    backgroundColor: '#4CAF50',
+    padding: 15,
+    borderRadius: 8,
+    width: '80%',
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  buttonDisabled: {
+    opacity: 0.5,
+  },
+  buttonText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
   },
   closeButton: {
     backgroundColor: '#4CAF50',
@@ -1445,6 +1432,142 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginTop: 20,
     alignItems: 'center',
+  },
+  playAgainButton: {
+    backgroundColor: '#4CAF50',
+    padding: 15,
+    borderRadius: 8,
+    minWidth: 200,
+    alignItems: 'center',
+  },
+  playAgainButtonText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+
+  // Name input styles
+  nameInput: {
+    backgroundColor: 'white',
+    padding: 10,
+    borderRadius: 5,
+    width: '80%',
+    marginBottom: 10,
+    textAlign: 'center',
+    fontSize: 18,
+  },
+  nameInputBorder: {
+    borderBottomWidth: 1,
+    borderColor: '#ccc',
+  },
+  nameInputOutline: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+  },
+  nameInputContainer: {
     width: '100%',
-  }
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  nameInputOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  nameInputDialog: {
+    backgroundColor: 'white',
+    padding: 20,
+    borderRadius: 10,
+    width: '80%',
+    maxWidth: 400,
+    alignItems: 'center',
+  },
+  nameInputTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  nameInputSubtitle: {
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 20,
+    color: '#666',
+  },
+
+  // Countdown styles
+  countdownContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  countdownText: {
+    fontSize: 72,
+    fontWeight: 'bold',
+    color: 'white',
+  },
+
+  // Level selection styles
+  levelList: {
+    width: '100%',
+    maxWidth: 500,
+  },
+  levelButton: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 15,
+    marginBottom: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+
+  // Leaderboard styles
+  leaderboard: {
+    padding: 20,
+    backgroundColor: 'white',
+    borderRadius: 10,
+    margin: 10,
+    maxWidth: 500,
+    width: '100%',
+  },
+  leaderboardTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 15,
+    color: '#333',
+  },
+  noScores: {
+    textAlign: 'center',
+    fontSize: 16,
+    color: '#666',
+    marginTop: 10,
+    fontStyle: 'italic',
+  },
+  scoreRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  scoreDate: {
+    fontSize: 14,
+    color: '#888',
+    marginLeft: 10,
+  },
 });

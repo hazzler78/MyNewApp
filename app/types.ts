@@ -1,0 +1,1 @@
+export type FlyVariant = 'normal' | 'special';
